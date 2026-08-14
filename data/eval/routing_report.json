@@ -1,0 +1,46 @@
+[
+  {
+    "scenario": "invalid_ticker_both_unavailable",
+    "ticker": "NOTAREALTICKER123",
+    "market_ok": false,
+    "filings_ok": false,
+    "market_error": "ticker_not_found",
+    "expected_route": "error",
+    "actual_route": "error",
+    "routed_correctly": true,
+    "synthesis_ok": false
+  },
+  {
+    "scenario": "valid_ticker_no_filings",
+    "ticker": "GOOGL",
+    "market_ok": true,
+    "filings_ok": false,
+    "market_error": null,
+    "expected_route": "synthesis",
+    "actual_route": "synthesis",
+    "routed_correctly": true,
+    "synthesis_ok": true
+  },
+  {
+    "scenario": "both_available",
+    "ticker": "AAPL",
+    "market_ok": true,
+    "filings_ok": true,
+    "market_error": null,
+    "expected_route": "synthesis",
+    "actual_route": "synthesis",
+    "routed_correctly": true,
+    "synthesis_ok": true
+  },
+  {
+    "scenario": "mcp_server_down",
+    "ticker": "AAPL",
+    "market_ok": false,
+    "filings_ok": true,
+    "market_error": "mcp_server_unreachable",
+    "expected_route": "synthesis",
+    "actual_route": "synthesis",
+    "routed_correctly": true,
+    "synthesis_ok": true
+  }
+]

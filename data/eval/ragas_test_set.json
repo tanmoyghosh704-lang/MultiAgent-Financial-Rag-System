@@ -1,0 +1,87 @@
+{
+  "_meta": {
+    "description": "RAGAS test set for the Filings Agent (project doc Phase 8A). 30 questions across all 15 companies, 2 per company, using the exact FILINGS_QUESTIONS the Synthesis Agent asks in production - not invented questions, so this eval reflects real system behavior. ground_truth was written by directly reading real retrieved chunks from the actual built index (data/eval/ragas source dump captured via ingestion, not fabricated). expected_section is informational (Item 1A / Item 7, per the 10-K's regulatory structure) - RAGAS itself only uses question/ground_truth/answer/contexts.",
+    "questions_used": [
+      "What are the main risk factors disclosed in the filing?",
+      "What does management's discussion say about recent financial performance and trends?"
+    ],
+    "section_aware_companies": ["AAPL", "JPM", "JNJ", "PG", "BA", "VZ", "CAT"],
+    "fallback_companies": ["MSFT", "NVDA", "BAC", "CVX", "WMT", "KO", "F", "PFE"]
+  },
+  "questions": [
+    {"id": "AAPL-1", "ticker": "AAPL", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "Apple's Item 1A Risk Factors section discloses risks including potential litigation and government investigations, new and changing laws/regulations on online safety and data security requiring compliance measures, and risks from investments in new business strategies, commercial relationships, and acquisitions that could disrupt ongoing business."},
+    {"id": "AAPL-2", "ticker": "AAPL", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "Apple's Item 7 MD&A should be read with the consolidated financial statements in Item 8; it primarily discusses fiscal 2025 results compared to fiscal 2024, while year-over-year comparisons between fiscal 2024 and 2023 are covered in the prior year's Form 10-K rather than repeated."},
+
+    {"id": "MSFT-1", "ticker": "MSFT", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Microsoft describes risks and uncertainties that could cause actual results to differ materially under 'Risk Factors,' 'Management's Discussion and Analysis of Financial Condition and Results of Operations,' and 'Quantitative and Qualitative Disclosures About Market Risk' (Item 7A), including legal contingencies and judgment-heavy estimates such as debt investment impairment."},
+    {"id": "MSFT-2", "ticker": "MSFT", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Microsoft's Item 7 MD&A is intended to help readers understand results of operations and financial condition, supplementing the consolidated financial statements; the company discusses metrics used to assess business performance, allocate resources, and evaluate progress against its goals, including segment information."},
+
+    {"id": "NVDA-1", "ticker": "NVDA", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "NVIDIA's Item 1A Risk Factors cover risks such as export restrictions and political/regulatory actions affecting the business, scrutiny of corporate sustainability practices, and risks from the responsible use of AI technologies that could cause reputational or financial harm."},
+    {"id": "NVDA-2", "ticker": "NVDA", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "NVIDIA notes that operating results have fluctuated in the past and may continue to, cautioning investors not to rely on past results as indicative of future performance; the filing also discusses an ongoing phased upgrade of its ERP system and confirms no material changes to internal control over financial reporting during the quarter."},
+
+    {"id": "JPM-1", "ticker": "JPM", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "JPMorgan Chase's risk framework covers credit risk (loss from borrower/counterparty failure to meet obligations), market risk (from changes in interest/FX rates, equity/commodity prices, credit spreads), and operational risk (adverse outcomes from inadequate internal processes), managed through a firm-wide risk governance framework."},
+    {"id": "JPM-2", "ticker": "JPM", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "JPMorgan's Item 7 MD&A appears on pages 46-160 and should be read with the Consolidated Financial Statements on pages 165-314; management also reviews net interest income and noninterest revenue metrics excluding its Markets business (a non-GAAP measure) for additional insight into performance."},
+
+    {"id": "BAC-1", "ticker": "BAC", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Bank of America's Item 1A Risk Factors cover credit risk (borrower/counterparty failure to meet obligations), market risk (from adverse changes in market conditions affecting asset/liability values), and liquidity risk, managed through an Identify-Measure-Monitor-Control risk process."},
+    {"id": "BAC-2", "ticker": "BAC", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Bank of America's MD&A explains that critical accounting estimates are essential to understanding reported financial condition and operating performance, developed using governance frameworks including formal model-risk management and independent validation processes."},
+
+    {"id": "JNJ-1", "ticker": "JNJ", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "J&J discloses legal proceedings and government investigations arising in the ordinary course of business, recording accruals for loss contingencies when a liability is probable and reasonably estimable; as of December 28, 2025 certain litigation matters met that threshold. Market risk disclosures are incorporated by reference to the MD&A's Liquidity and Capital Resources section."},
+    {"id": "JNJ-2", "ticker": "JNJ", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "J&J's MD&A discusses critical accounting policies and estimates underlying its GAAP consolidated financial statements, and describes a multi-year, enterprise-wide initiative to integrate, simplify, and standardize HR, IT, procurement, supply chain, and finance systems and processes."},
+
+    {"id": "PG-1", "ticker": "PG", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "P&G's Risk Factors section (Item 1A) should be read together with MD&A and identifies significant factors that may adversely affect the business; it discusses cybersecurity threats specifically, noting that as of the filing date no cybersecurity incident had materially affected the company's strategy, operations, or financial condition."},
+    {"id": "PG-2", "ticker": "PG", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "P&G's MD&A (Item 7) is intended to explain financial condition, results of operations, and cash flows by focusing on year-over-year changes in key measures, and should be read alongside the Economic Conditions and Uncertainties and Risk Factors (Item 1A) sections."},
+
+    {"id": "CVX-1", "ticker": "CVX", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Chevron's Risk Factors (Item 1A, pages 25-27) discuss currency fluctuation against the U.S. dollar, higher inflation, reduced corporate liquidity/access to debt markets, and GHG regulation and climate change risks affecting Chevron's strategy, targets, and ESG-related disclosures, among other factors."},
+    {"id": "CVX-2", "ticker": "CVX", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Chevron's MD&A covers Key Financial Results, Earnings by Major Operating Area, Business Environment and Outlook, Results of Operations, and Liquidity and Capital Resources, and separately discloses long-term unconditional purchase obligations of $6.0 billion after 2030."},
+
+    {"id": "WMT-1", "ticker": "WMT", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Walmart discloses risk from litigation claims and other legal proceedings that may materially adversely affect results of operations, financial position, and liquidity, along with uncertainty about whether cash flows and capital market access will remain sufficient to fund operations, expansion, dividends, and share repurchases."},
+    {"id": "WMT-2", "ticker": "WMT", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Walmart's Item 7 MD&A covers fiscal years ended January 31, 2026, 2025, and 2024, noting strong membership income growth contributing to margin improvement, with the company tracking return on investment and free cash flow as key capital-allocation metrics."},
+
+    {"id": "KO-1", "ticker": "KO", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Coca-Cola's Item 1A Risk Factors include potential impairment charges on trademarks, goodwill, and other intangible or long-lived assets, and uncertainty related to an ongoing tax dispute with the IRS over estimated incremental tax and interest liability."},
+    {"id": "KO-2", "ticker": "KO", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Coca-Cola's MD&A breaks down operating margin by segment (e.g. Latin America, North America, Asia Pacific, Bottling Investments) and discusses critical accounting policies including equity method investments, pension plan valuations, revenue recognition, and income taxes."},
+
+    {"id": "BA-1", "ticker": "BA", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "Boeing's risk factors are described in the 'Risk Factors' section of the filing; the company also discloses legal proceedings, investigations, and inquiries in Note 23 to its Consolidated Financial Statements, any of which could materially affect its financial position, results of operations, cash flows, or reputation."},
+    {"id": "BA-2", "ticker": "BA", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "Boeing's MD&A discusses Core operating earnings/loss and Core operating margins, non-GAAP measures management uses to evaluate underlying business performance by excluding unallocated pension and postretirement benefit costs; there were no material changes to internal control over financial reporting in Q4 2025."},
+
+    {"id": "VZ-1", "ticker": "VZ", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "Verizon's Item 1A Risk Factors identify factors that may adversely affect its business, operations, financial condition, or future performance, including significant levels of debt, litigation expenses, potential adverse changes to its debt ratings, and rising benefit plan costs."},
+    {"id": "VZ-2", "ticker": "VZ", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "Verizon's MD&A discusses results by its two reportable segments, Consumer and Business, measured and evaluated based on segment operating income, consistent with how the company's chief operating decision maker assesses segment performance."},
+
+    {"id": "CAT-1", "ticker": "CAT", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "section_aware",
+     "ground_truth": "Caterpillar's Item 1A Risk Factors provide a cautionary discussion of risks, uncertainties, and assumptions material to the business, supplementing other factors discussed elsewhere in the report; Item 7A market risk information is provided via cross-references to specific notes in the financial statements rather than a standalone narrative."},
+    {"id": "CAT-2", "ticker": "CAT", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "section_aware",
+     "ground_truth": "Caterpillar's Item 7 MD&A is intended to help readers understand the company's Consolidated Financial Statements and the primary factors behind changes in key financial statement items between reporting periods."},
+
+    {"id": "F-1", "ticker": "F", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Ford discloses risk from legal proceedings and product liability matters, where accruals are typically based on extensive historical experience with similar claims; financial exposure is often difficult to estimate precisely since many matters do not specify a dollar amount of damages."},
+    {"id": "F-2", "ticker": "F", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Ford's MD&A reports full-year 2025 net cash provided by operating activities of $21.3 billion, up $5.9 billion year-over-year, driven primarily by higher Ford Credit operating cash flows and partially offset by lower net income; Company adjusted free cash flow was $3.5 billion, down $3.2 billion from the prior year."},
+
+    {"id": "PFE-1", "ticker": "PFE", "question": "What are the main risk factors disclosed in the filing?", "expected_section": "1A", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Pfizer's Item 1A Risk Factors, together with its MD&A, describe material risks to the business related to its industry and operations - including managed care trends - presented as forward-looking statements under the Private Securities Litigation Reform Act of 1995."},
+    {"id": "PFE-2", "ticker": "PFE", "question": "What does management's discussion say about recent financial performance and trends?", "expected_section": "7", "chunking_method": "sliding_window_fallback",
+     "ground_truth": "Pfizer's MD&A reports 2025 total revenues of $62.6 billion (a 2% decrease vs. 2024) and net cash flow from operations of $11.7 billion (an 8% decrease vs. 2024), with reported diluted EPS of $1.36 and adjusted diluted EPS (non-GAAP) of $3.22."}
+  ]
+}
