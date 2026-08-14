@@ -837,6 +837,122 @@ verifies the first one.
 
 ---
 
+## 2026-08-14 — Phase 5: LangGraph orchestrator (routing + a genuinely surprising latency result)
+
+### What I built
+`graph/state.py` (shared `ResearchState` TypedDict) and
+`graph/orchestrator.py`: wires Market/Filings/Synthesis into a real
+LangGraph `StateGraph` with **graph-level** conditional routing (a
+`route_after_agents` function evaluated at a join node, wired via
+`add_conditional_edges` to either `synthesis` or a dedicated `error`
+node) rather than relying on `synthesize_report`'s own internal "both
+unavailable" check - the project doc is explicit that routing must be
+real graph logic, not an if-statement inside one function, so this
+matters even though (as noted in Phase 4) the function-level check alone
+would have produced the same *output*. Built two graphs from the exact
+same node functions: `PARALLEL_GRAPH` (Market and Filings fan out from
+START, fan into a join node) and `SEQUENTIAL_GRAPH` (Market → Filings →
+routing) - same logic, different wiring, specifically so a
+sequential-vs-parallel latency comparison is measuring the ordering
+difference and nothing else.
+
+`graph/test_orchestrator.py`: 4 tests covering the real routing
+matrix - both agents fail (→ error node, confirmed no `report` key
+present, i.e. no LLM call happened), market-only (GOOGL: valid ticker,
+not in our 15-company filings index), and both-succeed (AAPL). The
+fourth "market fails but filings succeeds" combination from the
+project doc's routing rules is not naturally reachable in this dataset,
+since every company with filings indexed is, by construction, also a
+valid market ticker - noted rather than faked; Phase 4's mocked
+`synthesize_report` tests already cover that exact input shape at the
+function level.
+
+### Why this approach
+Separate top-level state keys (`market_latency_seconds`,
+`filings_latency_seconds`, not a shared `timings` dict) - a plain dict
+field written by two nodes in the same LangGraph superstep needs an
+explicit reducer (`Annotated[dict, merge_fn]`) or LangGraph raises on
+the concurrent write; giving each node its own key sidesteps needing a
+reducer at all, and reads more clearly regardless (see `graph/state.py`
+docstring for the reasoning kept alongside the code, not just here).
+
+A real join node (`join_node`, a pass-through) rather than pointing
+both parallel branches straight at `synthesis` - LangGraph only runs a
+node once *all* its incoming edges have delivered updates in the same
+superstep, so a shared join point is what makes `route_after_agents`
+evaluate exactly once, after both agents are done, instead of
+per-branch.
+
+### Difficulty encountered - and this is the real one
+Ran the actual sequential-vs-parallel latency comparison the project
+doc's Section 0A justification depends on (ticker `F`, two trials each):
+
+| | Parallel trial 1 | Parallel trial 2 | Sequential trial 1 | Sequential trial 2 |
+|---|---|---|---|---|
+| market | 2.09s | 1.43s | 0.90s | 0.90s |
+| filings | 29.67s | 32.94s | 17.04s | 12.32s |
+| synthesis | 100.27s | 72.45s | 91.22s | 77.81s |
+| **total** | **129.95s** | **105.40s** | **109.17s** | **91.04s** |
+
+**Parallel execution was slower, not faster - consistently, across both
+trials.** Averaged: parallel total ≈117.7s, sequential total ≈100.1s -
+parallel took about 17.5% *longer*. The `filings` node specifically
+was the clearest signal: roughly 2x slower when run concurrently with
+`market` (avg ~31.3s) than when run after it completes (avg ~14.7s).
+This is the opposite of what Phase 0's architecture justification
+assumed, and it would have been easy to not run this measurement at
+all and just assert "parallel is faster" the way most write-ups of
+multi-agent systems do without checking - which is exactly the
+dishonesty this project's logging discipline exists to prevent.
+
+### How it was resolved (root-cause reasoning, not yet independently confirmed)
+Not "fixed" - this is a real hardware constraint, not a bug, and the
+project doc already flagged the underlying cause before this phase even
+started: "a 7B q4 model partially spills to CPU/RAM on a 4GB card"
+(Section 2). The filings node's Ollama call is CPU-bound for a real
+fraction of its work on this GPU, not purely waiting on a remote
+server - so when `market_node`'s pandas/numpy processing runs
+concurrently in a second Python thread, both threads are competing for
+the same limited CPU cycles on a single laptop, and Python's GIL means
+the "parallel" threads don't get genuine multi-core execution for that
+CPU-bound work anyway. LangGraph's thread-based parallelism (no async
+node functions were used here) only pays off when branches are
+predominantly I/O-bound with idle CPU to interleave into - which isn't
+true here, because the bottleneck (Ollama inference, partially
+CPU-bound) is shared and saturated, not idle.
+
+This does **not** invalidate the multi-agent architectural argument -
+it changes what the argument rests on. The Section 0A justification for
+multiple agents (disjoint context budgets, disjoint tool sets,
+independent testability/evaluation - all independently true and already
+demonstrated across Phases 1-4) does not depend on parallel execution
+being faster on *this specific 4GB laptop GPU*. What this result does
+is turn "why Kaggle" from a preemptive plan into a testable, motivated
+hypothesis: a machine with more CPU headroom and a GPU that doesn't
+force partial CPU spillover should show the parallel structure's
+actual benefit, because the shared-resource contention causing the
+slowdown here is a property of *this hardware*, not of the graph
+design. This is now a concrete thing to check in Phase 8's latency
+benchmark - re-run this exact comparison on Kaggle and see whether the
+result flips. Framing it as "not yet confirmed" here rather than
+asserting the Kaggle result in advance, since that would be exactly the
+kind of unverified claim this log is supposed to avoid.
+
+### What I'd do differently
+Would have run this measurement in Phase 0 or Phase 1, cheaply, with
+dummy/fast placeholder node functions, before any real agent logic
+existed - purely to learn "does this specific machine even have
+parallel headroom for the kind of work these agents will do" as an
+environment characteristic, independent of whether the agents
+themselves work correctly. Finding this out now, after four phases of
+building real agents, cost nothing functionally (the graph and routing
+are correct regardless) but meant the "why multi-agent" latency
+evidence wasn't available until the orchestrator existed - a cheap
+synthetic version of this same benchmark would have been available on
+day one.
+
+---
+
 ## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
 
 ### What I built
