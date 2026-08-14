@@ -39,6 +39,55 @@ free T4/P100 GPU.
    `/kaggle/working/` before the session ends — Kaggle sessions are
    ephemeral, nothing persists automatically.
 
+## Running the full RAGAS eval on Kaggle (Phase 8)
+
+Validated locally on a 2-question subset first (`python -m eval.ragas_eval
+--limit 2`) to confirm the pipeline itself is correct before spending
+real time on it - see `LOG.md` Phase 8 entry. That run took **8m14s for
+2 questions**, which extrapolates to roughly 2 hours for the full
+30-question set locally - exactly the kind of job this project's
+local/Kaggle split exists for, so the full run belongs here, not on the
+laptop.
+
+Steps, in addition to the general setup above:
+
+1. `data/filings/` and `data/index/` are both gitignored (regenerable,
+   and `data/index/` in particular is a multi-hundred-MB Chroma DB not
+   worth committing) - a fresh clone on Kaggle won't have them. Rebuild
+   both before running the eval:
+   ```bash
+   python -m ingestion.download_filings
+   python -m ingestion.build_index
+   ```
+   (a minute or two each - SEC downloads and CPU embedding, not
+   GPU-bound, so this part isn't meaningfully faster on Kaggle, it's
+   just necessary setup).
+2. Run the full eval:
+   ```bash
+   python -m eval.ragas_eval
+   ```
+   Uses `qwen2.5:7b-instruct-q4_0` as the judge LLM (`JUDGE_MODEL` in
+   `eval/ragas_eval.py`) and the same `all-MiniLM-L6-v2` embeddings used
+   throughout this project - no OpenAI key needed.
+3. `eval/ragas_eval.py` already sets `RunConfig(timeout=900,
+   max_workers=2)` rather than RAGAS's defaults
+   (`timeout=180, max_workers=16`) - the defaults assume a high-throughput
+   remote API where 16 concurrent judge calls genuinely run in parallel;
+   against a single local Ollama instance they just queue behind each
+   other and blow the timeout (this is exactly what happened on the
+   first local validation attempt - see LOG.md). On Kaggle's GPU this
+   config is probably still conservative (real headroom exists to raise
+   `max_workers` there, since GPU-resident inference is fast enough that
+   more concurrent jobs may actually help) - worth tuning up if the
+   Kaggle run is slow, rather than assuming the local-hardware-tuned
+   values are automatically right there too.
+4. Results land in `data/eval/ragas_report.json` - unlike `data/filings/`
+   and `data/index/`, `data/eval/` is NOT gitignored (it's small,
+   human-readable, and worth keeping as a record of what the numbers
+   were on a given run), so download it from `/kaggle/working/` before
+   the session ends and commit it alongside the `LOG.md`/
+   `results/writeup.md` summary of the same numbers.
+
 ## Known gotcha: ragas import
 
 `ragas` currently has an open upstream bug where a bare `import ragas`

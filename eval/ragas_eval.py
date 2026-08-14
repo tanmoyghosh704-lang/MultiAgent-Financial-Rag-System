@@ -40,6 +40,20 @@ from ragas import EvaluationDataset, evaluate  # noqa: E402
 from ragas.embeddings import LangchainEmbeddingsWrapper  # noqa: E402
 from ragas.llms import LangchainLLMWrapper  # noqa: E402
 from ragas.metrics import AnswerRelevancy, ContextPrecision, ContextRecall, Faithfulness  # noqa: E402
+from ragas.run_config import RunConfig  # noqa: E402
+
+# RAGAS defaults (timeout=180s, max_workers=16) assume a high-throughput
+# remote API where 16 concurrent judge calls actually run in parallel.
+# Locally, there's one Ollama instance serving one model - 16 concurrent
+# jobs just queue behind each other, and since a single 7B-model call on
+# this hardware already takes 70-130s (see Phase 4/5 LOG.md entries), job
+# #16 could wait 15+ calls deep before even starting, blowing the 180s
+# timeout before it ever gets a turn. First real run hit exactly this:
+# all 8 jobs (2 questions x 4 metrics) TimeoutError'd, all scores NaN.
+# max_workers=2 keeps some overlap without starving any job for 25+
+# minutes; timeout=900 gives real headroom for this hardware's actual
+# per-call latency instead of assuming API-speed responses.
+LOCAL_OLLAMA_RUN_CONFIG = RunConfig(timeout=900, max_workers=2)
 
 TEST_SET_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_test_set.json"
 REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_report.json"
@@ -90,6 +104,7 @@ def run_ragas_eval(limit: int | None = None) -> dict[str, Any]:
         metrics=[Faithfulness(), AnswerRelevancy(), ContextPrecision(), ContextRecall()],
         llm=judge_llm,
         embeddings=judge_embeddings,
+        run_config=LOCAL_OLLAMA_RUN_CONFIG,
     )
 
     scores_df = result.to_pandas()

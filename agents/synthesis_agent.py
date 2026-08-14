@@ -74,6 +74,29 @@ _MARKET_TERMS = ("price", "volatility", "moving average", "growth", "%", "market
 _FILINGS_TERMS = ("risk", "filing", "disclos", "item ", "management", "10-k")
 
 
+def _format_market_cap(raw: Any) -> str:
+    """Pre-format market cap into a human-readable string instead of
+    handing the LLM a raw 12-digit integer and trusting it to do the
+    billion-scale division itself in its generated prose. Found via the
+    Phase 8 manual synthesis review: real market caps (e.g. JPM's actual
+    964,416,569,344) were coming out as "$9649.48 billion" - a 10x error
+    - and MSFT's came out two different, inconsistent ways in the same
+    report ("$3678 billion" in one section, "$36778 billion" in another).
+    The underlying data was always correct (verified directly against
+    fetch_fundamentals) - this was purely the model doing unreliable
+    mental arithmetic on a large number, which formatting it here
+    removes the need for entirely."""
+    if not isinstance(raw, (int, float)):
+        return str(raw)
+    if raw >= 1e12:
+        return f"${raw / 1e12:.2f} trillion"
+    if raw >= 1e9:
+        return f"${raw / 1e9:.2f} billion"
+    if raw >= 1e6:
+        return f"${raw / 1e6:.2f} million"
+    return f"${raw:,.0f}"
+
+
 def _format_market_context(market: dict[str, Any] | None) -> str:
     if market is None:
         return "MARKET DATA: not provided (Market Agent was not run for this query)."
@@ -90,7 +113,7 @@ def _format_market_context(market: dict[str, Any] | None) -> str:
         d = fundamentals["data"]
         lines.append(
             f"- {d.get('name', 'Unknown')}: P/E {d.get('trailing_pe')}, "
-            f"market cap {d.get('market_cap')}, 52-week range "
+            f"market cap {_format_market_cap(d.get('market_cap'))}, 52-week range "
             f"{d.get('fifty_two_week_low')}-{d.get('fifty_two_week_high')} {d.get('currency', '')}"
         )
     if indicators.get("ok"):

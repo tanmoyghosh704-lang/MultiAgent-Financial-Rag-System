@@ -6,7 +6,7 @@ slower tests make real Ollama calls (7B model - noticeably slower than
 the Filings Agent's default light model, expect ~60-100s per call).
 """
 
-from agents.synthesis_agent import check_cross_source_reasoning, synthesize_report
+from agents.synthesis_agent import _format_market_cap, check_cross_source_reasoning, synthesize_report
 
 MOCK_MARKET = {
     "fundamentals": {
@@ -78,6 +78,18 @@ price movement does not appear to reflect this concentration risk disclosed in t
 ## Data Gaps
 None.
 """
+
+
+def test_format_market_cap_matches_real_jpm_value():
+    # Real fetch_fundamentals("JPM") value (verified during Phase 8 manual
+    # review) - was reaching the LLM as this raw integer and coming back
+    # in generated reports as "$9649.48 billion" (a 10x error) instead of
+    # the correct ~$964 billion.
+    assert _format_market_cap(964416569344) == "$964.42 billion"
+
+
+def test_format_market_cap_trillion_scale():
+    assert _format_market_cap(4465746247680) == "$4.47 trillion"
 
 
 def test_check_cross_source_reasoning_flags_pasting_style():

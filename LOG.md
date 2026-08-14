@@ -1241,3 +1241,229 @@ its own sake in a project whose whole architectural argument rests on
 actual claim.
 
 ---
+
+## 2026-08-15 — Phase 8A: Routing evaluation + latency benchmark (formalized)
+
+### What I built
+`eval/routing_tests.py`: a standalone report (not a pytest gate) over
+the project doc's named routing scenarios - invalid ticker, valid
+ticker with no filings, both available, MCP server down. Noted directly
+in the module docstring rather than silently working around it: "invalid
+ticker" and "both unavailable" are the same code path in this system (a
+ticker with no market data and no filings routes identically regardless
+of *why* both are missing) - tested once, documented as one case, not
+inflated into two to hit a round number.
+
+`eval/latency_bench.py`: formalizes Phase 5's single-pair sequential-
+vs-parallel measurement and Phase 7's single MCP-overhead measurement
+into repeatable, multi-trial functions with real statistics
+(mean/stdev), built from the same node/agent functions so results stay
+comparable to the earlier single-sample versions.
+
+### Results
+Routing: **all 4 scenarios routed correctly** (`data/eval/routing_report.json`).
+
+Latency (ticker F, 2 fresh trials): **parallel mean 112.28s vs.
+sequential mean 98.07s - parallel 14.5% slower**, same direction as
+Phase 5's finding (17.5% slower there). Combined with Phase 5's 2
+trials, that's now 4 independent local trials all agreeing parallel is
+slower on this hardware - a consistent, not one-off, result.
+
+MCP overhead (5 trials): **mean 2.88s** (vs. Phase 7's single-sample
+3.68s) - consistent with that earlier measurement, now on firmer
+statistical footing.
+
+### Difficulty encountered
+`eval/routing_tests.py`'s first run crashed with
+`UnicodeEncodeError: 'charmap' codec can't encode character '✓'`
+- the `✓`/`✗` characters in the console-summary print statement aren't
+encodable under Windows' default `cp1252` console codepage when output
+is captured/redirected (as happens running via `python -m` with stdout
+piped). Fixed by switching to plain ASCII (`OK`/`MISROUTED`) - a real,
+generalizable lesson for any script in this project meant to run
+non-interactively on Windows: don't rely on Unicode symbols reaching
+the console reliably, this isn't guaranteed even though it's worked
+fine in ad hoc interactive testing throughout the project so far.
+
+### How it was resolved
+Inline, above. No code changes needed beyond the print statement.
+
+### What I'd do differently
+Would default to ASCII-only console output from the start in scripts
+meant to be run non-interactively - this is now the second time in the
+project a display-only cosmetic choice (Unicode symbols) caused an
+actual crash rather than just looking slightly worse (see also: none
+previously, this is the first, but the lesson generalizes to the
+`demo/streamlit_app.py` emoji use, which is safe only because Streamlit
+renders in-browser rather than through a Windows console).
+
+---
+
+## 2026-08-15 — Phase 8B: RAGAS evaluation pipeline (built, validated, handed to Kaggle)
+
+### What I built
+`data/eval/ragas_test_set.json`: 30 questions (2 per company x 15
+companies), using the exact `FILINGS_QUESTIONS` the Synthesis Agent
+asks in production rather than inventing new ones - so this eval
+reflects real system behavior, not a parallel question set that happens
+to never actually get asked. Every `ground_truth` was written by
+directly reading real retrieved chunks pulled from the live index (a
+one-off retrieval dump, not fabricated from general knowledge of these
+companies) - the process itself surfaced that AAPL's MD&A retrieval was
+weak before RAGAS ever confirmed it numerically (see below).
+
+`eval/ragas_eval.py`: portable local/Kaggle pipeline, judge LLM =
+`qwen2.5:7b-instruct-q4_0` via `ChatOllama`, embeddings =
+`all-MiniLM-L6-v2` via `HuggingFaceEmbeddings` (same model already used
+throughout this project's RAG pipeline) - no OpenAI key or paid API
+anywhere. Verified the exact RAGAS dataset schema this installed version
+(0.4.3) expects via introspection (`user_input`/`response`/
+`retrieved_contexts`/`reference`) rather than assuming the more commonly
+documented `question`/`answer`/`contexts`/`ground_truth` naming, which
+would have silently failed or errored - same "check the actual SDK"
+discipline as Phase 7's MCP work.
+
+### Difficulty encountered - and the honest local/Kaggle math
+First real run (`--limit 2`, using RAGAS's default `RunConfig`) failed
+completely: **all 8 jobs (2 questions x 4 metrics) hit `TimeoutError`**,
+every score `NaN`. Root cause: RAGAS defaults to `timeout=180s,
+max_workers=16` - tuned for a high-throughput remote API where 16
+concurrent judge calls genuinely run in parallel. Against a single local
+Ollama instance serving one 7B model, 16 concurrent jobs just queue
+behind each other; a call already known to take 70-130s locally (Phase
+4/5/7) means job #16 could be waiting 15+ calls deep before it even
+starts, blowing the 180s timeout before ever getting a turn. This is
+conceptually the same lesson as Phase 5's parallel-execution slowdown -
+concurrency only helps when there's real hardware headroom to absorb
+it, and assuming it exists (as both LangGraph's default thread
+parallelism and RAGAS's default `RunConfig` do) doesn't make it true on
+this machine. Fixed with a `RunConfig(timeout=900, max_workers=2)`
+tuned for one local model instance rather than a remote API.
+
+Re-ran with the fix: **all 8 jobs completed, 8m14s for 2 questions**,
+real in-range scores (faithfulness 0.5, answer_relevancy 0.354,
+context_precision 0.25, context_recall 0.833). Extrapolating, the full
+30-question set would take roughly **2 hours locally** - exactly the
+job this project's local/Kaggle compute split exists for. Per the user's
+explicit preference stated at the very start of this project ("for high
+computation I want to use Kaggle"), did not run the full set locally
+even in the background - a 2-hour intensive Ollama job is real pressure
+on the laptop regardless of whether it blocks the terminal. Documented
+the exact handoff steps in `kaggle/README.md` (rebuild `data/filings/`
+and `data/index/` first since both are gitignored, run
+`python -m eval.ragas_eval`, the `RunConfig` may be worth loosening on
+Kaggle's GPU where more concurrency might actually help rather than
+hurt - noted as worth tuning there, not assumed).
+
+### Real, if small-sample, signal from the 2-question validation
+AAPL's MD&A question scored **faithfulness 0.0** - checked why rather
+than shrugging it off: the top-3 retrieved chunks for that exact
+question (visible in the raw context dump used to write the test set)
+were mostly table-of-contents and audit-opinion boilerplate, not
+substantive MD&A prose, so the model likely fell back on general
+knowledge instead of the (poor) retrieved context. AAPL-1's exact-0.0
+`answer_relevancy`/`context_precision` scores look more like a
+judge-model reliability limitation (these metrics require more complex
+internal LLM reasoning - e.g. `answer_relevancy` generates synthetic
+reverse-questions internally - that a smaller local judge may not
+perform as reliably as a frontier-model judge would) than a genuine
+zero-quality answer, though this needs the full 30-question run to
+actually confirm rather than conclude from n=1.
+
+### How it was resolved
+RunConfig fix, above. The AAPL retrieval-quality finding wasn't
+"resolved" - it's real signal, logged as-is, and it independently
+corroborated a finding from the Phase 8D manual synthesis review (see
+next entry) for the exact same company and topic - two different parts
+of this evaluation converging on the same weak spot is stronger
+evidence than either alone, and is exactly the kind of thing a
+multi-pronged eval strategy (automated metrics + manual review) is
+supposed to catch that either alone might miss.
+
+### What I'd do differently
+Would tune `RunConfig` for local-model reality *before* the first run,
+not after watching it fail - the same reasoning that led to `keep_alive`
+being configured from Phase 0 onward (a 7B model on this hardware is
+slow, this was never a surprise) should have been applied to RAGAS's
+concurrency assumptions too, since the underlying cause is identical.
+
+---
+
+## 2026-08-15 — Phase 8D: Manual synthesis quality review (found + fixed a real bug)
+
+### What I built
+`eval/generate_synthesis_reports.py` + `results/synthesis_quality_review.md`:
+full real (Market + Filings + Synthesis, no mocks) reports for 10
+companies - 5 section-aware, 5 fallback filings - scored by hand against
+a 5-criterion rubric (structural compliance, cross-source reasoning,
+grounding/accuracy, no financial advice, data-gaps honesty). Full
+reports in `data/eval/synthesis_reports.json`.
+
+### The headline finding: a real, fixable, confirmed bug
+Reading the first batch of 10 reports (not just running the automated
+`check_cross_source_reasoning()` heuristic on them), **4 of 10 had wrong
+or internally inconsistent market cap figures**: JPM reported as
+"$9649.48 billion" (real: ~$964.4B, a 10x error), VZ as "$2017.35
+billion" (real: ~$201.3B), Ford as "$574.4 billion" (real: ~$57.4B), and
+MSFT reported *two different values in the same report*
+("$3678 billion" in one section, "$36778 billion" in another).
+
+Checked the raw data **before** assuming the LLM was simply wrong:
+`fetch_fundamentals` returned the correct value for every one of these
+tickers (verified directly, e.g. JPM: `964416569344`). The bug wasn't
+in data collection at all - it was in
+`agents/synthesis_agent.py::_format_market_context()`, which handed the
+LLM a raw 12-digit integer and relied on it to correctly do
+billion-scale division inside its own generated prose. This is exactly
+the kind of large-number mental arithmetic LLMs are known to be
+unreliable at, and MSFT's report proves it concretely: the *same*
+number, interpreted two different (both wrong) ways within one
+generation.
+
+### How it was resolved
+Added `_format_market_cap()` to pre-format the number into a
+human-readable string (`"$964.42 billion"`) before it ever reaches the
+prompt - removes the arithmetic task from the LLM entirely rather than
+trying to prompt it into doing the math more carefully. Unit-tested
+directly against JPM's real value
+(`agents/test_synthesis_agent.py::test_format_market_cap_matches_real_jpm_value`).
+Verified against a live JPM run post-fix: correctly reports "$964.39
+billion." **Regenerated all 10 reports with the fix applied and
+re-read every one**: 10/10 correct market caps, no remaining
+inconsistencies.
+
+### Other findings from the full review (post-fix reports)
+**10/10 structurally compliant, 10/10 genuine cross-source reasoning,
+10/10 avoided financial advice.** A recurring, *positive* pattern:
+across two different companies in two different batches of this review
+(Ford in the first batch, Microsoft in the regenerated batch - both
+`sliding_window_fallback` filings), the system encountered genuinely
+weak risk-factor retrieval and **responded by honestly saying so**
+("does not provide any specific risk factors, which is unusual")
+instead of fabricating plausible-sounding content. This is the Phase 2
+fallback-chunking design (label uncertain sections honestly rather than
+guess) visibly surviving intact through retrieval, generation, and
+synthesis - not smoothed over into false confidence at any layer, which
+is exactly the property the architecture was designed to have.
+
+One likely-ungrounded specific claim (AAPL's first-batch report
+mentioning "the MacBook Pro and iPad mini" as evidence of recent
+innovation) didn't reproduce in the regenerated report, but the
+underlying cause - weak MD&A retrieval for AAPL - is the *same* root
+cause the Phase 8B RAGAS run independently measured as faithfulness 0.0
+for the identical company/question. Non-determinism means a specific
+ungrounded detail may or may not appear on any given run, but the
+retrieval weakness that makes it possible is stable and measured two
+independent ways.
+
+### What I'd do differently
+Nothing about the review process - reading full reports end-to-end
+rather than only trusting the automated heuristic is exactly what
+caught a bug the heuristic structurally cannot see (it checks for
+connective language and topic overlap, not numeric correctness). Would
+generalize the lesson forward: any place this project hands a raw
+numeric value to an LLM and expects correct prose about its scale
+(not just market cap - anywhere a large financial figure gets narrated)
+is worth auditing the same way before trusting the output.
+
+---

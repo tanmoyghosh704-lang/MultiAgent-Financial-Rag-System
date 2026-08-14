@@ -1,0 +1,64 @@
+{
+  "sequential_vs_parallel": {
+    "ticker": "F",
+    "trials": 2,
+    "parallel_totals": [
+      134.48,
+      90.09
+    ],
+    "sequential_totals": [
+      100.99,
+      95.15
+    ],
+    "parallel_mean": 112.28,
+    "sequential_mean": 98.07,
+    "parallel_stdev": 31.39,
+    "sequential_stdev": 4.13,
+    "parallel_details": [
+      {
+        "market": 4.48,
+        "filings": 29.01,
+        "synthesis": 105.45
+      },
+      {
+        "market": 4.03,
+        "filings": 14.88,
+        "synthesis": 75.2
+      }
+    ],
+    "sequential_details": [
+      {
+        "market": 4.25,
+        "filings": 15.55,
+        "synthesis": 81.19
+      },
+      {
+        "market": 4.07,
+        "filings": 18.38,
+        "synthesis": 72.69
+      }
+    ],
+    "parallel_vs_sequential_pct": 14.5
+  },
+  "mcp_overhead": {
+    "ticker": "F",
+    "trials": 5,
+    "mcp_times": [
+      3.83,
+      3.25,
+      3.64,
+      3.37,
+      3.32
+    ],
+    "direct_times": [
+      1.36,
+      0.41,
+      0.38,
+      0.46,
+      0.39
+    ],
+    "mcp_mean": 3.48,
+    "direct_mean": 0.6,
+    "overhead_seconds": 2.88
+  }
+}
