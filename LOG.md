@@ -717,6 +717,126 @@ per research query (Phase 5+).
 
 ---
 
+## 2026-08-14 — Phase 4: Synthesis Agent (cross-source reasoning)
+
+### What I built
+`agents/synthesis_agent.py::synthesize_report(ticker, market, filings)` -
+takes a Market Agent-shaped bundle (`fundamentals` + `indicators`
+results) and a list of Filings Agent Q&A results (asked
+`FILINGS_QUESTIONS`, two fixed questions: main risk factors, and
+management's discussion of recent performance), and produces a 5-section
+markdown report (Company Overview, Market Snapshot, Key Risks from
+Filings, Market vs. Filings: Agreement or Tension, Data Gaps) using the
+7B model. Either input can be `None` (agent was skipped/failed
+upstream); both `None` returns a structured error without an LLM call
+at all - directly implementing the project doc's Section 1 routing rule
+("if both fail, return a clear structured error, not a hallucinated
+report") a full phase before the graph that will actually enforce that
+routing exists.
+
+`check_cross_source_reasoning()`: an automatable proxy for "did this
+actually reason across sources, or just paste them" - checks the
+Agreement/Tension section specifically for non-trivial length, at least
+one connective/comparative word (however, despite, tension, ...), and
+mentions of terms from *both* sources in that section. Built per the
+project doc's explicit instruction to "test for this specifically."
+
+Tested per the doc's Build Order step 5: mocked Market/Filings inputs
+first (`agents/test_synthesis_agent.py`), including a deliberately
+crafted tension scenario (mock company: strong recent stock performance
++ filings disclosing 40% customer concentration risk with contract
+renewal uncertain) - then a real end-to-end chain test (actual
+`fetch_fundamentals`/`compute_indicators` + actual `answer_query` calls
++ synthesis) against Ford. 7/7 tests pass, ~2.5 minutes total (most of
+that is real 7B model calls, not test overhead).
+
+### Why this approach
+Two fixed filings questions, not an open-ended "summarize everything" -
+the Synthesis Agent needs *comparable, structured* filings input to
+reason against market data, and an unconstrained "tell me about this
+company's filing" call would produce inconsistent shape run to run. Risk
+factors + MD&A performance discussion were chosen because they're the
+two sections most likely to actually connect to market data (a risk
+factor can be checked against price/volatility; MD&A performance
+commentary can be checked against recent % change) - Item 1 (Business)
+or Item 2 (Properties), for contrast, have much less to say that market
+data could meaningfully agree or disagree with.
+
+7B model, not the Filings Agent's default 1.5B - this is the one node
+the project doc explicitly earmarks for the most reasoning-heavy step
+(Section 2), and cross-source reasoning is a harder task than
+single-source retrieval+citation. Worth the latency cost here
+specifically (~75-100s per report locally) in a way it wasn't
+obviously worth it for the Filings Agent, where the decision was
+deferred to Phase 8's numbers instead of decided outright.
+
+The heuristic reasoning-check exists for the same reason the Filings
+Agent has two grounding checks instead of trusting the model: an
+automatable, zero-marginal-cost signal on *every* run, not a substitute
+for real evaluation. Phase 8's manual rubric-scored review across ~10
+companies is still the real answer to "is the synthesis actually good"
+- this just catches the obvious failure (empty/one-line tension
+section, or a section that only talks about one source) cheaply and
+immediately, the same relationship the Filings Agent's grounding checks
+have to Phase 8's RAGAS numbers.
+
+### Difficulty encountered
+Genuinely, less than expected - the 7B model produced real cross-source
+reasoning on the *first* attempt against the mock tension scenario,
+with no prompt iteration needed (see the actual output in this session:
+"the market does not seem to be fully pricing in these risks, as
+evidenced by the positive stock movement despite the disclosed
+dependency" - that's a real connection, not two paragraphs stapled
+together). This is worth recording precisely because the project doc
+anticipated pasting-not-reasoning as a likely, expected failure mode
+("this is a very common, very defensible difficulty to have hit") -
+and here it wasn't, on this model, for this scenario. Not claiming this
+generalizes perfectly across all 15 companies without checking (that's
+exactly what Phase 8's manual review across ~10 companies is for) - but
+honest logging cuts both ways: a difficulty that didn't materialize is
+as worth recording accurately as one that did, rather than searching
+for a struggle to report just because one was expected.
+
+**A different, real, unflagged problem did show up** in the real
+end-to-end Ford test: the model's own generated commentary contained a
+factual/logical error unrelated to grounding - it described "adjusted
+EBIT margin also saw an improvement from 5.9% to 5.5%" when 5.9% to
+5.5% is a *decline*, not an improvement. This is a meaningfully
+different failure mode from anything the Filings Agent's grounding
+checks catch: the underlying numbers here were plausibly grounded
+(pulled from real retrieved figures), but the model's own interpretive
+language about a correctly-retrieved number was simply wrong. Citation-
+existence checking and semantic-similarity grounding both operate on
+"is this claim traceable to a source chunk" - neither is designed to
+catch "is this arithmetic/directional claim about two correctly-sourced
+numbers actually correct." That's a distinct problem (numerical/logical
+reasoning correctness) from the RAG-specific one (faithfulness to
+retrieved text) this project's grounding checks were built for.
+
+### How it was resolved
+Not fixed - logged as a known limitation rather than patched with a
+narrow rule, because a narrow fix (e.g. regex-checking for "improvement"
+near a negative percentage delta) would be exactly the kind of brittle,
+overfit patch that doesn't generalize past the one example that
+motivated it. This is real scope for a proper fix (a numerical-
+consistency check comparing stated directional language against the
+actual sign of referenced deltas) but building that well requires
+seeing more examples of how it fails, which is what Phase 8's broader
+evaluation across more companies and questions is for.
+
+### What I'd do differently
+Nothing about the Synthesis Agent's design - the mock-first testing
+approach worked exactly as the project doc intended (caught the target
+failure mode's absence with a real, deliberately adversarial scenario
+before ever touching a live agent chain). The EBIT-margin finding is a
+reminder to keep watching *specific numbers* in generated reports during
+Phase 8's manual review, not just whether sections are well-connected
+prose - "reads well and cites sources" and "is arithmetically correct"
+are different bars, and this project's grounding infrastructure only
+verifies the first one.
+
+---
+
 ## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
 
 ### What I built
