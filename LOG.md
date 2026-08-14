@@ -565,6 +565,158 @@ versus good enough as-is.
 
 ---
 
+## 2026-08-14 — Phase 3: Filings Agent (retrieval + generation + grounding)
+
+### What I built
+`agents/filings_agent.py`: `retrieve()` (Chroma query filtered by ticker,
+reusing Phase 2's index), `generate_answer()` (Ollama chat call with a
+context block of labeled retrieved chunks), and two independent
+verification layers - `check_citations_exist()` (structural: does every
+`(Item X)` citation in the answer correspond to a section that was
+actually retrieved?) and `check_semantic_grounding()` (content: does
+every sentence in the answer have a retrieved chunk it's actually close
+to, by embedding cosine similarity?) - combined in `answer_query()`.
+`agents/test_filings_agent.py`: 8 tests, mixing fast deterministic unit
+tests of the grounding-check logic against fabricated inputs (no LLM
+call needed to test that logic) with slower real end-to-end calls.
+
+### Why this approach
+Two independent grounding signals, not one, because they catch different
+failure modes: citation-checking catches a *hallucinated label*
+(claiming "(Item 9)" when nothing from Item 9 was retrieved) but would
+miss a *hallucinated claim attached to a real label* (correctly citing
+"(Item 1A)" while saying something Item 1A's actual text doesn't
+support) - semantic similarity catches that second case, which pure
+citation-checking structurally cannot. Neither is a proof of
+correctness on its own (semantic similarity is a heuristic, not an
+entailment check), but together they're a real, explainable,
+zero-additional-cost signal (reuses the same embedding model already in
+the stack) that's far better than trusting the model's citations at
+face value.
+
+Two Ollama-connected agents in this project make direct LLM calls
+(Filings Agent here, Synthesis Agent later) while the Market Agent goes
+through MCP - this is deliberate, not inconsistent: MCP is the boundary
+specifically for the Market Agent's external tool calls (Section 7 of
+the doc), not a blanket rule that every agent must be wrapped in a
+protocol. The Filings Agent's retrieval is over a local index with no
+external consumer, so it stays a direct function call.
+
+### Difficulty encountered (four real ones, in the order they were found)
+
+**1. Citation format not followed at all, first attempt.** First prompt
+just stated the citation rule in prose. Real test against AAPL: zero
+`(Item X)` citations anywhere in the answer, despite an explicit
+numbered instruction. Fixed by adding one worked example to the system
+prompt (context → question → correctly-cited answer) - this fixed that
+specific test case, but not universally (see difficulty 4).
+
+**2. Sentence-splitter bug inflating false grounding failures.** The
+first grounding-check run flagged markdown list markers ("2.", "3.") as
+"ungrounded sentences" - they're not sentences at all, they're an
+artifact of splitting on `[.!?]` without accounting for numbered-list
+formatting. Fixed by filtering split results to require at least 3
+letters, so numeric fragments never enter the grounding check at all.
+
+**3. Two real chunking bugs, found only because an actual generated
+answer looked wrong.** Testing against NVDA (a `sliding_window_fallback`
+filing), a retrieved chunk started `"cally with the SEC..."` - visibly
+a word cut in half. Two separate causes, found by actually reading the
+retrieved chunks instead of only reading the LLM's answer:
+  - `_split_on_paragraphs`'s hard-split fallback (for a single paragraph
+    longer than `MAX_CHUNK_CHARS`) sliced on raw character indices.
+    Fixed with a word-boundary-respecting split instead.
+  - Separately, the *overlap* logic (`pieces[i-1][-overlap_chars:]`)
+    did the exact same raw-character-slice mistake when building the
+    prefix carried into the next chunk - fixing the hard-split alone
+    didn't fully fix the symptom, because this second slice was an
+    independent source of the same bug. Fixed by dropping any partial
+    leading word-fragment from the slice.
+  - A **bigger, related finding** while investigating this: an initial
+    "how many chunks look suspicious" check flagged 304/381 (80%) of
+    NVDA's chunks - which led to discovering that `BeautifulSoup.get_text()`
+    has no CSS engine, so it was extracting text from `display:none`
+    elements, specifically the `<ix:header>` block that holds NVDA's
+    entire hidden inline-XBRL tagging layer (raw fact identifiers like
+    `us-gaap:CommonStockMember`, context IDs, no prose at all). On
+    closer, more precise measurement, the *actual* contamination was
+    17/381 chunks (~4.5%) - the 80% figure was a false alarm from an
+    imprecise first heuristic (flagging any lowercase chunk-start, which
+    mostly just caught normal mid-sentence sliding-window starts, not
+    real junk). Both numbers are worth keeping in the record: the
+    over-broad first check would have been a bad exaggeration to report
+    as fact, and re-measuring more precisely before concluding "how big
+    is this problem" is the actual lesson, not just "fixed a bug." Fixed
+    by stripping `<ix:header>` and any `display:none` element before
+    calling `get_text()`. Rebuilt the full index after each of these
+    three fixes and re-ran the full test suite each time rather than
+    batching the fixes - each rebuild takes ~2-3 minutes, cheap insurance
+    against a fix silently not doing what I thought.
+
+**4. Citation-format compliance is inconsistent, not just "off" -
+confirmed non-deterministic across queries with the light model.**
+After the one-shot-example fix (difficulty 1) worked on the AAPL supply
+chain question, it did *not* reliably reproduce: a JPM credit-risk
+question came back with zero citations despite clearly using retrieved
+content; a deliberately unanswerable question ("what will the stock
+price be in 2030") sometimes correctly triggered the "insufficient
+information" refusal and sometimes instead hallucinated an unrelated
+answer about term debt figures pulled from a retrieved financial-
+statements chunk. This also exposed a real gap in
+`check_citations_exist`: an answer with **zero** citations trivially has
+**zero hallucinated** citations too, so it was passing
+`all_citations_valid: True` - vacuously, not because it was actually
+grounded. Fixed by adding an explicit `missing_required_citation` check
+(zero citations + not a refusal = flagged), covered by a dedicated unit
+test (`test_check_citations_flags_missing_citation_on_factual_claim`)
+using a fabricated example specifically because this exact bug would
+otherwise be invisible to a test that only checks the "citations valid"
+field superficially.
+
+### How it was resolved
+Ran the identical JPM credit-risk question against
+`qwen2.5:7b-instruct-q4_0` instead of the default `1.5b` light model:
+correctly cited `(Item 15)` (the real retrieved section), latency
+48.6s vs. roughly 15-25s for the light model on comparable queries -
+consistent with the project doc's known constraint that a 7B q4 model
+partially spills to CPU/RAM on this 4GB GPU. Deliberately did **not**
+switch the default model based on this single comparison - a handful of
+spot checks isn't a real answer to "does model size actually matter
+here," and the project already has the right tool for that question:
+Phase 8's RAGAS faithfulness/citation-accuracy numbers, run at scale,
+comparing both models properly instead of trusting my own read of 2-3
+examples. `MODEL_NAME` stays configurable via the `LIGHT_MODEL` env var
+(defaults to `1.5b` for fast local dev), with the model-choice decision
+explicitly deferred to real evaluation data rather than decided here on
+vibes.
+
+### What I'd do differently
+Would inspect retrieved chunk *text*, not just the LLM's final answer,
+from the very first test - three of the four difficulties above
+(sentence-splitter, both chunking bugs, part of the citation
+inconsistency) were only found by actually reading what got retrieved,
+not by reading what the model produced from it. A wrong-looking answer
+is a symptom; the retrieved context is where the actual cause usually
+is, and checking it first would have been faster than reasoning
+backward from generation output each time.
+
+### Follow-up: the yfinance rate-limiting flag from Phase 1 just triggered
+Running the full test suite during this phase, `test_fetch_price_history_valid_tickers`
+failed on a live run with `$AAPL: possibly delisted; no price data found` -
+obviously false (Apple is not delisted). Retried the identical call three
+times immediately after with 2s gaps: all three succeeded. This is exactly
+the transient Yahoo Finance flakiness flagged as a hypothesis (not yet
+observed) at the end of the Phase 1 log entry - now it's an observed fact,
+not a hypothesis, and it's a real, if minor, in interview material: the
+function correctly returned a structured `{"ok": False, ...}` result
+rather than crashing the test run, which is the exact resilience the
+Phase 1 envelope-return design was for. No code change needed here - this
+is a live external dependency being flaky, not a bug - but worth watching
+if it recurs at higher frequency once the graph is making repeated calls
+per research query (Phase 5+).
+
+---
+
 ## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
 
 ### What I built

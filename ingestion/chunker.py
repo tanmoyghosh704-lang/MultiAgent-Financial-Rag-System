@@ -99,9 +99,24 @@ _ITEM_CANDIDATE_PATTERN = re.compile(r"Item\s+(\d{1,2}[A-C]?)\.(?!\d)")
 
 
 def extract_text(html_path: Path) -> str:
+    """Extract visible prose text, stripping the hidden inline-XBRL tagging
+    layer these filings carry (see LOG.md: modern 10-Ks are "Inline XBRL" -
+    every financial fact is machine-tagged, and some of that tagging lives
+    in a hidden <ix:header> block BeautifulSoup's get_text() doesn't know is
+    invisible, since it has no CSS engine - it happily returns hidden text
+    right alongside visible prose. Left unstripped, that block's tag-name
+    soup ("us-gaap:CommonStockMember", raw context IDs, dates with no
+    sentence around them) polluted the first ~4.5% of every filing's
+    fallback chunks, found via a real Filings Agent test on NVDA."""
     with open(html_path, encoding="utf-8", errors="ignore") as f:
         content = f.read()
     soup = BeautifulSoup(content, "lxml")
+
+    for hidden in soup.find_all("ix:header"):
+        hidden.decompose()
+    for hidden in soup.find_all(style=lambda s: s and "display:none" in s.replace(" ", "")):
+        hidden.decompose()
+
     return soup.get_text(separator="\n")
 
 
@@ -156,20 +171,41 @@ def _split_on_paragraphs(text: str, max_chars: int, overlap_chars: int) -> list[
         if len(para) <= max_chars:
             current = para
         else:
-            for i in range(0, len(para), max_chars - overlap_chars):
-                pieces.append(para[i : i + max_chars])
+            # Word-boundary split, not a raw character-count slice - a hard
+            # index cut here produced chunks starting mid-word (e.g.
+            # "cally with the SEC..." from "specifically") in filings whose
+            # risk-factor bullets run as one long unbroken paragraph with no
+            # internal newlines. Found via a real Filings Agent test against
+            # NVDA - see LOG.md.
+            words = para.split(" ")
+            piece_words: list[str] = []
+            piece_len = 0
+            for word in words:
+                if piece_len + len(word) + 1 > max_chars and piece_words:
+                    pieces.append(" ".join(piece_words))
+                    piece_words = piece_words[-1:] if overlap_chars else []
+                    piece_len = sum(len(w) + 1 for w in piece_words)
+                piece_words.append(word)
+                piece_len += len(word) + 1
+            if piece_words:
+                pieces.append(" ".join(piece_words))
             current = ""
 
     if current:
         pieces.append(current)
 
-    # apply overlap between adjacent pieces so context isn't lost at a cut
+    # apply overlap between adjacent pieces so context isn't lost at a cut.
+    # Word-boundary aware, same reason as the hard-split above: a raw
+    # [-overlap_chars:] slice cuts mid-word just as easily as a raw forward
+    # slice does (this was the actual remaining source of chunks starting
+    # mid-word after the hard-split fix - the hard-split was fixed but this
+    # overlap slice, found via the same NVDA test, was doing the same thing).
     overlapped = []
     for i, piece in enumerate(pieces):
         if i == 0:
             overlapped.append(piece)
         else:
-            prefix = pieces[i - 1][-overlap_chars:]
+            prefix = " ".join(pieces[i - 1][-overlap_chars:].split(" ")[1:])
             overlapped.append(f"{prefix}\n{piece}")
     return overlapped
 
