@@ -565,6 +565,70 @@ versus good enough as-is.
 
 ---
 
+## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
+
+### What I built
+`ingestion/build_index.py`: chunks every downloaded filing
+(`ingestion/chunker.py`), embeds each chunk with
+`sentence-transformers/all-MiniLM-L6-v2`, and writes them into a single
+persistent Chroma collection at `data/index/` with per-chunk metadata
+(`ticker`, `section_item`, `section_title`, `chunk_index`, `method`).
+One collection for all 15 companies, filtered by `ticker` at query time
+— this is the concrete payoff of the Phase 0 Chroma-over-FAISS decision
+finally being exercised. Ran it end to end: **8,628 chunks indexed
+across 15/15 companies** (228 for AAPL up to 1,166 for JPM, reflecting
+real filing-length differences — banks' 10-Ks run enormous due to
+detailed financial-statement notes).
+
+`ingestion/test_retrieval.py`: standalone sanity tests (no labeled
+answer set yet — that's RAGAS, Phase 8) confirming: the index is
+queryable, `where={"ticker": ...}` filtering actually restricts results
+to one company, a section-aware filing's top result for a risk-factors
+query carries the correct `Item 1A` label, a fallback filing's top
+results are honestly labeled `section_item: "unknown"` rather than a
+guessed section, and an unfiltered cross-company query
+("electric vehicle production and battery supply") surfaces Ford — the
+one auto/EV company in the universe — near the top, which is a small
+but real signal that the embeddings are semantically meaningful, not
+just structurally correct.
+
+### Why this approach
+Chunk size ties directly back to the embedding model choice from Phase
+0 (`all-MiniLM-L6-v2`, chosen for running fine on CPU with no GPU
+needed) — `chunker.py`'s `MAX_CHUNK_CHARS = 1200` exists specifically
+because that's roughly this model's effective 256-token window; this
+is one config decision spanning two files/phases and worth remembering
+as connected if either changes later. Each `build_index()` run deletes
+and recreates the collection first, rather than appending — makes the
+index reproducible from `data/filings/` + the current chunker code
+every time, instead of silently accumulating duplicate/stale chunks
+across repeated runs during development.
+
+### Difficulty encountered
+None at this step — the harder problems (data source, chunking) were
+already worked through in the two previous entries. Batching
+`collection.add()` calls at 200 chunks was a precaution taken before
+running against the largest filings (JPM/BAC, 1000+ chunks) rather than
+a fix for an observed failure; worth noting since it's a "did this
+proactively" entry, not a "this broke" entry, and the doc asks for
+honesty in both directions.
+
+### How it was resolved
+N/A — ran cleanly on the first attempt after the chunker itself was
+validated.
+
+### What I'd do differently
+Nothing at this scale yet. Flag for Phase 8: the RAGAS test set should
+deliberately include questions against both section-aware and fallback
+filings, so the faithfulness/context-precision numbers can be compared
+across the two chunking methods — that comparison is the real evidence
+for whether the fallback's honesty-over-guessing tradeoff cost
+meaningful retrieval quality, versus just being a reasonable
+engineering compromise that didn't matter in practice. Currently a
+hypothesis, not a measured fact.
+
+---
+
 ## 2026-08-14 — Phase 3: Filings Agent (retrieval + generation + grounding)
 
 ### What I built
@@ -953,66 +1017,84 @@ day one.
 
 ---
 
-## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
+## 2026-08-14 — Phase 6: FastAPI serving + Streamlit demo
 
 ### What I built
-`ingestion/build_index.py`: chunks every downloaded filing
-(`ingestion/chunker.py`), embeds each chunk with
-`sentence-transformers/all-MiniLM-L6-v2`, and writes them into a single
-persistent Chroma collection at `data/index/` with per-chunk metadata
-(`ticker`, `section_item`, `section_title`, `chunk_index`, `method`).
-One collection for all 15 companies, filtered by `ticker` at query time
-— this is the concrete payoff of the Phase 0 Chroma-over-FAISS decision
-finally being exercised. Ran it end to end: **8,628 chunks indexed
-across 15/15 companies** (228 for AAPL up to 1,166 for JPM, reflecting
-real filing-length differences — banks' 10-Ks run enormous due to
-detailed financial-statement notes).
+`serving/app.py`: `POST /research` (accepts a ticker or a company name,
+runs the Phase 5 graph, returns the report plus per-agent metadata) and
+`GET /health`. `resolve_ticker()` matches against
+`ingestion/sources.yaml`'s 15-company universe (direct ticker match,
+then case-insensitive company-name substring match) and falls through
+unchanged for anything else - deliberately not rejecting unrecognized
+input, since the graph's own routing (Phase 5) already degrades
+gracefully for a ticker it doesn't recognize; rejecting it here would
+just be a second, redundant place doing the same job worse.
 
-`ingestion/test_retrieval.py`: standalone sanity tests (no labeled
-answer set yet — that's RAGAS, Phase 8) confirming: the index is
-queryable, `where={"ticker": ...}` filtering actually restricts results
-to one company, a section-aware filing's top result for a risk-factors
-query carries the correct `Item 1A` label, a fallback filing's top
-results are honestly labeled `section_item: "unknown"` rather than a
-guessed section, and an unfiltered cross-company query
-("electric vehicle production and battery supply") surfaces Ford — the
-one auto/EV company in the universe — near the top, which is a small
-but real signal that the embeddings are semantically meaningful, not
-just structurally correct.
+`demo/streamlit_app.py`: a small UI that calls the API over HTTP (not a
+direct import of the graph) and lays out per-agent status/latency as
+metric tiles plus the rendered report - directly implementing the
+project doc's stated reason for building this at all ("showing which
+agents fired and their timings makes the multi-agent architecture
+visible rather than something the interviewer has to take on faith").
+
+`serving/test_app.py`: 6 tests via FastAPI's `TestClient` - health
+check, ticker resolution (direct/by-name/unrecognized), and two
+end-to-end `/research` calls (Apple by name → full report; an invalid
+ticker → structured `ok: false` response with HTTP 200, not a 500,
+since "no data available" is a legitimate response shape, not a server
+error).
 
 ### Why this approach
-Chunk size ties directly back to the embedding model choice from Phase
-0 (`all-MiniLM-L6-v2`, chosen for running fine on CPU with no GPU
-needed) — `chunker.py`'s `MAX_CHUNK_CHARS = 1200` exists specifically
-because that's roughly this model's effective 256-token window; this
-is one config decision spanning two files/phases and worth remembering
-as connected if either changes later. Each `build_index()` run deletes
-and recreates the collection first, rather than appending — makes the
-index reproducible from `data/filings/` + the current chunker code
-every time, instead of silently accumulating duplicate/stale chunks
-across repeated runs during development.
+Sync `def` endpoints, not `async def` - every call underneath is
+blocking I/O (Ollama, yfinance, Chroma), and none of it has an async
+variant anywhere in this codebase. FastAPI runs sync path functions in
+a thread pool automatically; wrapping blocking calls in `async def`
+without actually awaiting anything async would block the single event
+loop instead of helping, which is a common and easy mistake in FastAPI
+apps that add `async` reflexively rather than because the code inside
+is actually async.
+
+Streamlit talks to the API over real HTTP rather than importing
+`run_research` directly - a demo that bypasses the actual served
+interface isn't really demoing the deployable system, and the marginal
+cost of using `requests` instead of a direct import is one file.
 
 ### Difficulty encountered
-None at this step — the harder problems (data source, chunking) were
-already worked through in the two previous entries. Batching
-`collection.add()` calls at 200 chunks was a precaution taken before
-running against the largest filings (JPM/BAC, 1000+ chunks) rather than
-a fix for an observed failure; worth noting since it's a "did this
-proactively" entry, not a "this broke" entry, and the doc asks for
-honesty in both directions.
+None in the endpoint logic itself - Phases 1-5 already did the hard
+work (graph, agents, routing), so this phase was mostly shaping an
+already-correct `ResearchState` into an HTTP response. The one real
+verification gap: no browser automation tool is available in this
+session, so the Streamlit UI was verified by starting both servers
+(`uvicorn` + `streamlit run --server.headless true`) and confirming
+both serve HTTP 200 with no startup errors in either log - this proves
+the app *loads*, not that the "Run Research" button's rendered output
+looks right end-to-end in a browser. The underlying data it would
+display is already covered by `serving/test_app.py`'s real
+`/research` calls, so the actual risk surface here is narrow (Streamlit
+layout code, which is simple enough to read-review), but it's honest to
+record what was and wasn't actually checked rather than claim full UI
+verification that didn't happen.
+
+A separate, unrelated thing worth recording here since it happened
+during this phase: an earlier `LOG.md` edit (the Phase 2 embedding/index
+entry) had been appended at the very end of the file instead of its
+correct chronological position, so it ended up sitting after the Phase 5
+entry instead of before Phase 3. Found and fixed by comparing
+`grep -n "^## 2026"` output against the expected phase order before
+writing this entry - worth a brief note since the log's own chronology
+being wrong would have undermined its usefulness as an interview-prep
+artifact if it went unnoticed.
 
 ### How it was resolved
-N/A — ran cleanly on the first attempt after the chunker itself was
-validated.
+N/A for the serving layer itself - noting the UI verification gap and
+the log-ordering fix rather than a bug in the shipped code.
 
 ### What I'd do differently
-Nothing at this scale yet. Flag for Phase 8: the RAGAS test set should
-deliberately include questions against both section-aware and fallback
-filings, so the faithfulness/context-precision numbers can be compared
-across the two chunking methods — that comparison is the real evidence
-for whether the fallback's honesty-over-guessing tradeoff cost
-meaningful retrieval quality, versus just being a reasonable
-engineering compromise that didn't matter in practice. Currently a
-hypothesis, not a measured fact.
+Nothing for the serving layer specifically. Worth remembering for the
+write-up: this is the first component in the project without full
+end-to-end automated verification, and that should be stated plainly
+in `results/writeup.md` rather than glossed over - "the API is fully
+tested, the demo UI was startup-verified but not click-tested" is a
+precise, honest claim; "the demo works" would not be.
 
 ---
