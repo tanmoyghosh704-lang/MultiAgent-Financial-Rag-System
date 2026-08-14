@@ -1098,3 +1098,146 @@ tested, the demo UI was startup-verified but not click-tested" is a
 precise, honest claim; "the demo works" would not be.
 
 ---
+
+## 2026-08-14 — Phase 7: MCP integration (Market Agent → MCP client)
+
+### What I built
+`mcp_server/market_data_server.py`: a FastMCP server exposing
+`get_price_history`, `get_fundamentals`, `compute_indicators` as MCP
+tools - each one a thin wrapper around the unchanged Phase 1 functions
+in `ingestion/market_data.py`, not new logic. `agents/market_agent.py`:
+the Market Agent, now an MCP **client** - spawns the server as a stdio
+subprocess, opens one session per `fetch_market_data()` call, calls both
+tools within it, parses the JSON text results back into the same
+`{"fundamentals": ..., "indicators": ...}` shape the graph already
+expected. `graph/orchestrator.py::market_node` changed by exactly one
+line (`fetch_market_data(ticker)` instead of three direct calls) -
+everything downstream (routing, synthesis, the API) needed zero changes,
+which is itself worth noting: the MCP conversion only touched the one
+seam it was supposed to touch.
+
+Before checking any of this in, verified the actual installed SDK
+(`mcp==1.29.0`) via `inspect.signature()` on `FastMCP.tool`/`FastMCP.run`
+and by checking `CallToolResult.model_fields` for a `structuredContent`
+field, rather than writing code against remembered MCP syntax - the
+project doc explicitly warns this ecosystem moves fast. This paid off
+directly: `structuredContent` exists as a field but does **not**
+auto-populate for a plain `dict` return type annotation in this SDK
+version (confirmed by a live round-trip test, not by reading docs) -
+tool results come back as `TextContent` with a JSON string body instead,
+which `agents/market_agent.py` parses with `json.loads`. Assuming the
+structured-content path would have shipped a client that silently
+returned `None` for every tool call.
+
+`agents/test_market_agent.py`: 4 tests - a real round trip (AAPL),
+not-found propagation, the MCP-unreachable failure mode (server module
+path broken on purpose), and a direct measurement of MCP overhead vs. a
+plain function call.
+
+### Why this approach
+One MCP session per `fetch_market_data()` call (not a persistent
+session reused across the whole app's lifetime) - simpler to reason
+about and correctly scoped to "the Market Agent's turn to act" within a
+single research query, and, not incidentally, this is exactly the
+choice that makes the overhead honestly measurable rather than hidden
+behind a warm connection that wouldn't reflect what a fresh request
+actually costs. A persistent-session version is a legitimate
+alternative for a higher-throughput deployment, but "correct and
+measured" beat "faster but obscures the actual per-request cost" for
+this project's purposes.
+
+Server spawned via `python -m mcp_server.market_data_server` with `cwd`
+set to the project root, not as a bare script path - see difficulty
+below for why the bare-script version doesn't work.
+
+### Difficulty encountered
+**1. Server subprocess couldn't import `ingestion`.** First version
+spawned the server as a bare script (`args=[SERVER_SCRIPT_PATH]`).
+Immediate failure: `ModuleNotFoundError: No module named 'ingestion'`
+inside the subprocess. Python only puts a script's *own* directory on
+`sys.path` by default, not the project root - so `ingestion` (a sibling
+package) wasn't importable from inside `mcp_server/market_data_server.py`
+when launched that way. Fixed by launching with `-m mcp_server.market_data_server`
+and `cwd` set to the project root instead, which makes Python treat it
+as a proper module import with the working directory on `sys.path`.
+
+**2. Poor error messages on server-unreachable, found by testing the
+failure mode on purpose.** The MCP-unreachable test (server module path
+broken) initially surfaced `"ExceptionGroup: unhandled errors in a
+TaskGroup (1 sub-exception)"` as the error detail - technically accurate,
+useless for actually diagnosing the problem. Root cause: `anyio`'s
+`TaskGroup` (used internally by the MCP client's stdio transport) wraps
+the real underlying failure inside nested `ExceptionGroup`s. Fixed with
+a small recursive `_describe_error()` helper that walks `.exceptions`
+down to the leaf exception - improved the message to `"McpError:
+Connection closed"`, which is at least actionable ("check whether the
+server process is starting"), though it still doesn't surface the
+subprocess's own stderr text (`"No module named ..."`) since stdio
+transport doesn't give the client structured access to that stream on a
+connection failure - a real, minor, acknowledged limitation, not chased
+further since the improved message is good enough to diagnose from in
+practice.
+
+**3. Two Ollama-related test failures were infrastructure, not code.**
+Mid-phase, `graph/test_orchestrator.py` failed with
+`ConnectionError: Failed to connect to Ollama` - the local Ollama
+server had stopped running entirely (not a code regression from the MCP
+change). Restarted it (`ollama serve`), confirmed all four models still
+present, re-ran - passed. Separately, one orchestrator test failed on an
+assertion, not the system under test: it required the literal substring
+`"not"` or `"unavailable"` in the Data Gaps section, and the model wrote
+"no filings **were provided**" (correct, honest, just phrased
+differently) - the exact same class of brittle string-matching mistake
+already made once before in this same test during Phase 5. Fixed
+properly this time by removing the negation-word requirement entirely:
+the test already verifies filings were genuinely unavailable
+*programmatically* a few lines earlier, so the text assertion only
+needs to confirm the report topically mentions filings in that section,
+not guess at every way a model might phrase "there's a gap here."
+
+### How it was resolved
+All three covered above, inline. Worth stating plainly: none of these
+were subtle - a missing sys.path entry, an unhelpful wrapped exception
+message, and a test that was more specific than the actual requirement
+- but all three were only found by actually running the real
+integration (server subprocess, real failure injection, real graph
+run) rather than reasoning about the code in the abstract.
+
+### Real, measured MCP overhead
+`agents/test_market_agent.py::test_mcp_overhead_vs_direct_call`,
+representative run: **MCP call 4.95s vs. direct call 1.28s - roughly
+3.7s of overhead**, almost entirely subprocess spawn + Python
+interpreter startup + re-importing yfinance/pandas fresh in the child
+process, not protocol serialization cost. This is a single measurement,
+not the rigorous benchmark Phase 8 is scoped to do (multiple trials,
+proper statistics) - but it's real and worth stating now rather than
+waiting: **this is the honest cost side of the "why MCP" tradeoff** the
+project doc asks to state plainly. The benefit side (reusability,
+external-consumer decoupling) is what Section 7's required proof-of-
+value step demonstrates, not raw performance - MCP was never going to
+win on latency against an in-process function call, and pretending
+otherwise would undercut the actual argument for using it.
+
+### External-client proof-of-value: not yet completed
+The project doc requires demonstrating the same MCP server working with
+a client outside this codebase (e.g. Claude Desktop) - this needs a real
+Claude Desktop installation and manual interaction, which isn't
+something achievable from this terminal-only session. Prepared
+everything needed for the user to do this in a few minutes:
+`results/mcp_external_client_proof/README.md` has the exact config JSON
+(with this machine's real venv Python path) and steps. Flagging this
+explicitly as an open item rather than silently marking Phase 7 "done"
+- the deliverables checklist in the project doc treats this as a
+required, not optional, step.
+
+### What I'd do differently
+Would write the MCP-unreachable test *before* the happy-path test next
+time, not after - in both this phase and Phase 5, the "what does failure
+look like" case surfaced a real bug (here: the unhelpful error message)
+that the happy-path tests had no way to catch, since they never exercise
+that code path at all. Testing the failure mode isn't just coverage for
+its own sake in a project whose whole architectural argument rests on
+"the system should degrade gracefully, not silently" - it's checking the
+actual claim.
+
+---

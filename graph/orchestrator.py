@@ -31,20 +31,22 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from agents.filings_agent import answer_query
+from agents.market_agent import fetch_market_data
 from agents.synthesis_agent import FILINGS_QUESTIONS, synthesize_report
 from graph.state import ResearchState
-from ingestion.market_data import compute_indicators, fetch_fundamentals, fetch_price_history
 
 
 def market_node(state: ResearchState) -> dict[str, Any]:
+    # Phase 7: goes through the MCP server (agents/market_agent.py) instead
+    # of calling ingestion/market_data.py directly - same output shape
+    # ({"fundamentals": ..., "indicators": ...}), so this was a one-line
+    # swap, not a redesign. See LOG.md for the measured MCP overhead.
     t0 = time.time()
     ticker = state["ticker"]
-    fundamentals = fetch_fundamentals(ticker)
-    price_history = fetch_price_history(ticker)
-    indicators = compute_indicators(price_history)
+    market_result = fetch_market_data(ticker)
     elapsed = time.time() - t0
     return {
-        "market_result": {"fundamentals": fundamentals, "indicators": indicators},
+        "market_result": market_result,
         "market_latency_seconds": round(elapsed, 2),
     }
 

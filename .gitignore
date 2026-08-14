@@ -10,5 +10,6 @@ results/plots/*
 !results/plots/.gitkeep
 results/mcp_external_client_proof/*
 !results/mcp_external_client_proof/.gitkeep
+!results/mcp_external_client_proof/README.md
 *.log
 .pytest_cache/
