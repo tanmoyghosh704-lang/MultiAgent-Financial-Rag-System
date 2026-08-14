@@ -13,16 +13,23 @@ complete): `results/writeup.md`.
 
 ## Status
 
-Phase 0 (scaffold) and Phase 1 (market-data functions) — in progress.
-See `LOG.md` for what's done and why.
+Phase 0 (scaffold), Phase 1 (market-data functions), and Phase 2
+(filings ingestion: SEC EDGAR download, section-aware chunking,
+embedding + Chroma index) — in progress. See `LOG.md` for what's done
+and why, including a real pivot (started with Indian companies + manual
+PDF sourcing, switched to US companies + SEC EDGAR after the manual
+sourcing step proved too slow/unreliable — logged in full).
 
 ## Scope
 
-- **Companies:** 15 large-cap NSE-listed Indian companies across
-  sectors (IT, banking, FMCG, auto, telecom, infra, energy) — see
-  `ingestion/sources.yaml` for the list.
-- **Filings:** annual report PDFs sourced per-company (not SEC EDGAR —
-  no Indian equivalent), RAG'd with section-aware chunking.
+- **Companies:** 15 large-cap US companies across sectors (tech,
+  banking, healthcare, consumer staples, energy, industrials, telecom,
+  auto) — see `ingestion/sources.yaml` for the list.
+- **Filings:** latest 10-K per company, pulled programmatically from SEC
+  EDGAR (`ingestion/download_filings.py`), RAG'd with section-aware
+  chunking anchored to the standardized Item 1/1A/7/etc. structure
+  (`ingestion/chunker.py`), with a documented sliding-window fallback for
+  filings where section-heading detection isn't confident.
 - **Market data:** yfinance, served via a real MCP server (Market Agent
   is an MCP client, not a direct function caller — see project doc
   Section 0A for why).
@@ -61,7 +68,7 @@ Requires [Ollama](https://ollama.com) running locally with at least
 mcp_server/   MCP server exposing yfinance-based market-data tools
 agents/       Market Agent (MCP client), Filings Agent (RAG), Synthesis Agent
 graph/        LangGraph state + orchestrator (conditional routing, parallel exec)
-ingestion/    Market-data functions (Phase 1) + filings download/chunk/index (Phase 2)
+ingestion/    Market-data functions (Phase 1) + SEC EDGAR download/chunk/index (Phase 2)
 data/         Filings, vector index, eval sets (gitignored where regenerable)
 eval/         RAGAS eval, routing tests, latency benchmarks
 serving/      FastAPI /research endpoint

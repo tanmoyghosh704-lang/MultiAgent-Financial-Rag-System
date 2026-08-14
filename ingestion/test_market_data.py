@@ -8,8 +8,8 @@ MCP or LangGraph. Requires internet access.
 
 from ingestion.market_data import compute_indicators, fetch_fundamentals, fetch_price_history
 
-VALID_TICKERS = ["RELIANCE.NS", "TCS.NS"]
-INVALID_TICKER = "NOTAREALTICKER123.NS"
+VALID_TICKERS = ["AAPL", "MSFT"]
+INVALID_TICKER = "NOTAREALTICKER123"
 
 
 def test_fetch_price_history_valid_tickers():
@@ -35,7 +35,7 @@ def test_fetch_fundamentals_valid_tickers():
         assert result["ok"] is True
         data = result["data"]
         assert data["name"]
-        assert data["currency"] == "INR"
+        assert data["currency"] == "USD"
 
 
 def test_fetch_fundamentals_invalid_ticker():
@@ -45,7 +45,7 @@ def test_fetch_fundamentals_invalid_ticker():
 
 
 def test_compute_indicators_valid_ticker():
-    price_result = fetch_price_history("RELIANCE.NS", period="1y")
+    price_result = fetch_price_history("AAPL", period="1y")
     indicators = compute_indicators(price_result)
     assert indicators["ok"] is True
     data = indicators["data"]

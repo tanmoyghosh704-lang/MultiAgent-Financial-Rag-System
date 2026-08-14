@@ -257,3 +257,374 @@ the kind of "concrete difficulty" material the project doc wants
 captured, not smoothed over.
 
 ---
+
+## 2026-08-14 — Phase 2 pivot: Indian annual reports → US companies + SEC EDGAR
+
+### What I built
+Reversed the Phase 0 decision to use Indian companies + manually-sourced
+annual report PDFs. Switching to US companies with filings pulled from
+SEC EDGAR instead. New 15-company list and rationale below; the actual
+ingestion code follows in the next log entry once built.
+
+### Why this approach
+This is a genuine course-correction, not the original plan — worth
+logging honestly rather than rewriting history to make it look like US
+companies were the plan all along.
+
+What happened: started Phase 2 by trying to source real annual-report
+PDF URLs for the 15 Indian companies. Delegated the web research (find
+each company's official IR page, locate the direct PDF link) to an
+agent. It became clear partway through — and was confirmed by the fact
+that the very first attempt at this had to be interrupted before it
+even produced a candidate URL for one company — that this was going to
+be slow, uncertain, and would need per-company manual verification no
+matter what: there's no bulk API, PDF links live behind inconsistent IR
+page structures, some are JS-gated, and even a "found" URL isn't
+trustworthy until independently downloaded and checked (an agent
+reporting a URL is not the same as the URL being real and stable — that
+distinction matters and is why every found URL would have needed a real
+`curl`/`requests` download to verify before it could go in
+`sources.yaml`).
+
+Reconsidered against the actual goal: the interview-defensibility of
+this project comes from the multi-agent architecture, real conditional
+routing, parallel execution, MCP boundary, and RAGAS evaluation rigor —
+none of which depend on which country's companies are in the dataset.
+The Indian-companies choice was optimizing for a "more novel / more
+relevant to Indian roles" data source at the cost of burning build time
+on a brittle, manual ingestion step that has nothing to do with the
+actual skills being demonstrated. That's a bad trade once the manual
+sourcing cost became concrete instead of theoretical.
+
+**SEC EDGAR, chosen for what it removes, not just what it adds:**
+- `www.sec.gov/files/company_tickers.json` — a single free file mapping
+  every ticker to its CIK (company identifier). No per-company search.
+- `data.sec.gov/submissions/CIK##########.json` — given a CIK, returns
+  every filing that company has ever made, so the most recent 10-K can
+  be found programmatically (filter `form == "10-K"`, take the most
+  recent).
+- The actual filing document is then a direct, deterministic URL:
+  `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-no-dashes}/{primaryDocument}`.
+- End to end: ticker in, filing text out, zero manual URL-hunting, zero
+  per-company judgment calls about whether a link is stable.
+- 10-Ks have a legally standardized section structure (Item 1, Item 1A
+  Risk Factors, Item 7 MD&A, Item 8 Financial Statements, ...) — the
+  same headers in the same order for every company, which is what makes
+  section-aware chunking (Phase 2's other major design decision) robust
+  across all 15 companies with one heuristic, instead of needing
+  per-company or best-effort heading detection like the Indian PDFs
+  would have required.
+- Filings are HTML/plain text, not scanned PDFs — no OCR, no PDF-layout
+  extraction quirks (column detection, header/footer noise) to fight.
+
+**Alternative considered and rejected:** keep Indian companies and have
+the user manually source the 15 PDFs. Rejected because it shifts the
+bottleneck rather than removing it, and still leaves inconsistent
+section structure across companies as a standing problem for the
+chunking phase — the harder part wasn't just finding URLs, it was
+what happens after, with no standardized structure to lean on.
+
+### New company list (replaces the Phase 0 Indian list)
+
+15 large-cap US companies across sectors, chosen for the same reason as
+the original list (sector diversity so eval/synthesis isn't testing one
+domain's vocabulary) plus SEC EDGAR + yfinance coverage guaranteed for
+all of them:
+
+| Company | Ticker | Sector |
+|---|---|---|
+| Apple | AAPL | Tech/Consumer |
+| Microsoft | MSFT | Tech |
+| NVIDIA | NVDA | Tech/Semiconductors |
+| JPMorgan Chase | JPM | Banking |
+| Bank of America | BAC | Banking |
+| Johnson & Johnson | JNJ | Healthcare |
+| Procter & Gamble | PG | Consumer Staples |
+| ExxonMobil | XOM | Energy |
+| Walmart | WMT | Retail |
+| Coca-Cola | KO | Consumer Staples |
+| Boeing | BA | Industrials/Aerospace |
+| Verizon | VZ | Telecom |
+| Caterpillar | CAT | Industrials |
+| Ford | F | Auto |
+| Pfizer | PFE | Healthcare/Pharma |
+
+Market data functions from Phase 1 (`ingestion/market_data.py`) need
+zero code changes for this switch — they take a ticker string and were
+never Indian-market-specific, which validates that keeping them generic
+in Phase 1 (rather than, say, hardcoding `.NS` handling anywhere) was
+the right call. Only the ticker list and `.env`/config-level company
+universe change.
+
+### Difficulty encountered
+The interruption itself is the difficulty worth recording: burned real
+time and one full agent-research cycle on Indian PDF sourcing before
+stepping back and questioning whether the country choice was worth the
+cost. The lesson isn't "Indian data is bad" — it's that a data-source
+decision made early (Phase 0) without first validating the riskiest
+assumption (can PDFs actually be sourced reliably and fast?) cost a
+wasted cycle. The fix in the moment: user asked directly "what would be
+easy," which is exactly the right question to reset on.
+
+### How it was resolved
+Switched data source and company list (this entry). No code from Phase
+0/1 needed to change other than the ticker list, since market-data
+functions were built ticker-agnostic.
+
+### What I'd do differently
+For the next data-source decision in a project like this (if there is
+one), validate the riskiest/least-certain assumption first with a small
+spike — e.g., before locking in "15 Indian companies, manual PDF
+sourcing," try to actually find and download ONE company's PDF first,
+timeboxed to a few minutes, before committing the whole company list and
+architecture to that path. Would have surfaced this same conclusion in
+Phase 0 instead of partway through Phase 2.
+
+---
+
+## 2026-08-14 — Phase 2: SEC EDGAR filing download
+
+### What I built
+`ingestion/download_filings.py` — resolves each ticker to a CIK via
+SEC's `company_tickers.json`, looks up that CIK's most recent 10-K via
+`data.sec.gov/submissions/...`, and downloads the actual filing document
+to `data/filings/{TICKER}_10K.htm`. Verified the three-endpoint chain
+manually with `curl`/a scratch Python script against AAPL before writing
+the real script, rather than writing it against remembered API shape and
+hoping. Ran it against all 15 companies; writes a `download_manifest.json`
+recording success/failure per ticker for reproducibility.
+
+### Why this approach
+Every filing URL is resolved programmatically, nothing hardcoded — this
+is the entire point of the Phase 0→2 pivot away from Indian PDFs (see
+previous entry): no manual link-hunting, no per-company judgment calls.
+SEC requires a descriptive `User-Agent` header with contact info on
+every request (their fair-access policy) — used
+`"MultiAgent-Financial-RAG-Research tanmoyghosh704@gmail.com"`
+consistently; an anonymous/default User-Agent risks throttling or a
+block. Added a 0.3s delay between requests — SEC's stated limit is ~10
+req/sec, this is a one-time ingestion script so there's no reason to run
+anywhere near that limit.
+
+Each function returns a result dict (`{"ok": bool, ...}`) rather than
+raising, same pattern as Phase 1's market-data functions — a batch job
+over 15 companies should report a full summary at the end, not die on
+the first miss.
+
+### Difficulty encountered
+1 of 15 companies (XOM — Exxon Mobil) failed with `no_10k_found` on the
+first run. Investigated rather than just retrying or skipping it:
+`company_tickers.json` maps `XOM` to CIK `2115436`, titled "ExxonMobil
+Holdings Corp" — not the long-standing CIK `34088` ("Exxon Mobil Corp")
+I'd have expected. Checked that CIK's filing history directly: it has
+28 filings, all `10-Q`, `8-K`, `8-K12B`, `S-8 POS`, `POSASR` — no `10-K`
+at all. The `8-K12B` form type is the tell: it's specifically used when
+a new holding-company entity becomes the successor issuer in a
+corporate reorganization. So Exxon appears to be mid-reorg into a new
+holding-company structure as of this run, and the new entity hasn't
+completed its first annual filing cycle yet — the historical 10-Ks live
+under the old, now-superseded CIK.
+
+### How it was resolved
+Didn't special-case a predecessor-CIK fallback for one company — that's
+exactly the kind of one-off complexity the project doc's time-boxing
+section warns against adding. Swapped XOM for Chevron (CVX) instead,
+verified CVX resolves to a clean current 10-K first (`curl`-style check
+before committing the swap, same discipline as the AAPL verification
+above), then re-ran the full batch. All 15/15 downloaded successfully
+on the second run.
+
+### What I'd do differently
+This is a good, real example of "conditional routing" thinking applied
+one level earlier than the graph — the same "does this data source
+actually have what I need, and if not, degrade/substitute rather than
+force it" judgment the Filings Agent's graph routing will need to make
+at query time (Section 1 of the project doc) also applied here at
+ingestion time for a company whose expected data wasn't there. Worth
+saying explicitly in an interview: this wasn't a bug, it was the
+ingestion pipeline correctly surfacing a real-world data-availability
+gap, and the fix was a substitution decision, not a code workaround.
+
+---
+
+## 2026-08-14 — Phase 2: Section-aware chunking (and why it isn't universal)
+
+### What I built
+`ingestion/chunker.py`: extracts visible text from each filing's HTML
+(BeautifulSoup), detects the ~23 standardized 10-K "Item" section
+boundaries where possible, and chunks each section to
+`MAX_CHUNK_CHARS = 1200` with 150-char overlap, splitting on paragraph
+boundaries so a chunk doesn't get cut mid-sentence where avoidable. For
+filings where section detection isn't confident (fewer than 18 of the
+23 canonical items recovered, in order), falls back to the same
+paragraph-aware chunking applied as a sliding window over the whole
+document instead. Every chunk records its section item/title (or
+`None` + `"unknown (sliding-window fallback)"` for fallback chunks) so
+this is visible downstream, not hidden.
+
+Chunk size (1200 chars, 150 overlap) is not arbitrary: sized to
+`sentence-transformers/all-MiniLM-L6-v2`'s effective ~256-token window
+(roughly 1000-1200 characters of English). A much bigger chunk would
+still embed "successfully" but most of its text would be silently
+truncated/ignored by the model — the chunk would look fine in the index
+but the embedding wouldn't actually represent most of its content. Chose
+this over the doc's fixed-size-chunking rejection case for the *inside*
+of a section (once you're inside "Item 1A Risk Factors," you still need
+to split that section into embeddable pieces — the point is anchoring
+those splits to real section boundaries first, not that no
+character-count splitting happens anywhere).
+
+**Concrete example of what naive fixed-size chunking would have broken**
+(this is the exact kind of evidence the project doc asks for, not just
+an assertion): a plain 1000-character window starting at offset 38100 in
+Apple's filing produces a chunk that opens mid-sentence with boilerplate
+about the investor-relations website (tail end of Item 1 Business),
+then crosses straight into Item 1A Risk Factors's opening paragraph, and
+gets cut off mid-word: `"...have or have not occurred prev"`
+(`previously`, truncated). That single chunk's embedding would represent
+a blend of "where to find investor relations info" and "how the company
+frames risk disclosures" — two unrelated topics — and if retrieved, the
+Filings Agent would have no single correct section to cite it against.
+Section-aware chunking's first Risk Factors chunk instead starts cleanly
+at `"Item 1A.    Risk Factors\nThe following summarizes factors..."`
+with a real section label attached.
+
+### Why this approach (regex iteration - the real story, not the clean version)
+First heuristic: match `Item\s+(\d+[A-C]?)\.` followed by 2+ literal
+non-breaking spaces (`\xa0\xa0`) then a title on the same line — this
+was based on how Apple's filing (Workiva-rendered) visually pads
+headings with repeated `&nbsp;` for indentation, cleanly distinguishing
+real headings (nbsp-padded) from table-of-contents entries (newline-
+separated, no padding) and body cross-references (no trailing period).
+Worked perfectly on Apple: 22/23 correct sections, zero false
+positives. Tested against 6 more filers before trusting it — JPM, WMT,
+F, CVX all returned **zero** matches. Different filing agents don't use
+the nbsp-padding convention at all.
+
+Second heuristic: relaxed the separator to any non-newline whitespace
+(`[ \t\xa0]+`) with the title ending in an optional period before a
+newline, based on how JPM's filing actually renders headings
+(`"Item 1A. Risk Factors. \nThe following..."`). This recovered JPM
+cleanly (21 sections) but was *worse* elsewhere: F jumped to 78 matches
+(mostly the word "Item 7" recurring throughout the MD&A section's own
+running prose, e.g. "...as discussed in Item 7...", which happens
+constantly in real 10-Ks because sections cross-reference each other
+by Item number) and MSFT still matched nothing.
+
+### Difficulty encountered
+The core problem neither regex actually solved: cross-references to
+other Items are a *structural* feature of 10-K prose, not noise to
+filter with a slightly better pattern — MD&A sections routinely say
+"see Item 7A" or "as described in Item 1A," and any purely pattern-based
+heading matcher will occasionally mistake one of these for a real
+heading, especially at scale across 15 different filing agents' HTML
+conventions. There is no single regex that cleanly separates "this text
+looks like a heading" from "this text mentions an Item number in a
+sentence" — both can be arbitrarily similar depending on how a given
+filing agent's HTML happens to wrap and format.
+
+### How it was resolved
+Stopped trying to fix this with a better pattern and changed the
+*decision procedure* instead: keep the broad, permissive candidate
+regex (catches real headings AND false positives), but resolve
+ambiguity using document structure rather than text formatting —
+walk the 23 canonical items in their legally-mandated order, and for
+each one, among same-numbered candidates after the previous accepted
+section, pick whichever is followed by the **longest run of text**
+before the next Item-like token of any number. Real section headings
+are followed by pages of genuine content; an inline cross-reference is
+usually followed shortly by more ordinary prose (which often mentions
+another Item number soon after, in the same paragraph or the next).
+This is a heuristic, not a guarantee — it recovered a clean full
+sequence for 7/15 filers (AAPL, JPM, BA, VZ, CAT, JNJ, PG) and
+correctly self-identified low confidence for the other 8 (MSFT, NVDA,
+BAC, CVX, WMT, KO, F, PFE all landed below the 18-section threshold),
+which is exactly the honest outcome wanted here: rather than force a
+single regex to be right for everyone (and silently mislabel sections
+when it's wrong), the chunker knows when it doesn't know, and falls
+back to sliding-window chunking with the label made explicit for those
+8 filings rather than guessing.
+
+Result across all 15: `AAPL` 228 chunks, `MSFT` 374 (fallback), `NVDA`
+384 (fallback), `JPM` 1166, `BAC` 1147 (fallback), `JNJ` 374, `PG` 329,
+`CVX` 568 (fallback), `WMT` 414 (fallback), `KO` 719 (fallback), `BA`
+453, `VZ` 471, `CAT` 458, `F` 780 (fallback), `PFE` 763 (fallback).
+
+### What I'd do differently
+A stronger version of this (didn't build it, flagging for later if
+retrieval quality on the 8 fallback filings turns out to matter for the
+RAGAS numbers in Phase 8): use the filing's own table of contents as
+ground truth for section titles first, then search the body for each
+title string specifically as an anchor, instead of relying purely on
+the "Item X." numbering pattern. Didn't build this now because it's
+meaningfully more code for a benefit that's currently theoretical - the
+honest fallback is a legitimate engineering answer, not a placeholder,
+and RAGAS numbers (Phase 8) are the real signal for whether the
+fallback filings' retrieval quality is actually a problem worth solving
+versus good enough as-is.
+
+---
+
+## 2026-08-14 — Phase 2: Embedding + Chroma index, retrieval sanity test
+
+### What I built
+`ingestion/build_index.py`: chunks every downloaded filing
+(`ingestion/chunker.py`), embeds each chunk with
+`sentence-transformers/all-MiniLM-L6-v2`, and writes them into a single
+persistent Chroma collection at `data/index/` with per-chunk metadata
+(`ticker`, `section_item`, `section_title`, `chunk_index`, `method`).
+One collection for all 15 companies, filtered by `ticker` at query time
+— this is the concrete payoff of the Phase 0 Chroma-over-FAISS decision
+finally being exercised. Ran it end to end: **8,628 chunks indexed
+across 15/15 companies** (228 for AAPL up to 1,166 for JPM, reflecting
+real filing-length differences — banks' 10-Ks run enormous due to
+detailed financial-statement notes).
+
+`ingestion/test_retrieval.py`: standalone sanity tests (no labeled
+answer set yet — that's RAGAS, Phase 8) confirming: the index is
+queryable, `where={"ticker": ...}` filtering actually restricts results
+to one company, a section-aware filing's top result for a risk-factors
+query carries the correct `Item 1A` label, a fallback filing's top
+results are honestly labeled `section_item: "unknown"` rather than a
+guessed section, and an unfiltered cross-company query
+("electric vehicle production and battery supply") surfaces Ford — the
+one auto/EV company in the universe — near the top, which is a small
+but real signal that the embeddings are semantically meaningful, not
+just structurally correct.
+
+### Why this approach
+Chunk size ties directly back to the embedding model choice from Phase
+0 (`all-MiniLM-L6-v2`, chosen for running fine on CPU with no GPU
+needed) — `chunker.py`'s `MAX_CHUNK_CHARS = 1200` exists specifically
+because that's roughly this model's effective 256-token window; this
+is one config decision spanning two files/phases and worth remembering
+as connected if either changes later. Each `build_index()` run deletes
+and recreates the collection first, rather than appending — makes the
+index reproducible from `data/filings/` + the current chunker code
+every time, instead of silently accumulating duplicate/stale chunks
+across repeated runs during development.
+
+### Difficulty encountered
+None at this step — the harder problems (data source, chunking) were
+already worked through in the two previous entries. Batching
+`collection.add()` calls at 200 chunks was a precaution taken before
+running against the largest filings (JPM/BAC, 1000+ chunks) rather than
+a fix for an observed failure; worth noting since it's a "did this
+proactively" entry, not a "this broke" entry, and the doc asks for
+honesty in both directions.
+
+### How it was resolved
+N/A — ran cleanly on the first attempt after the chunker itself was
+validated.
+
+### What I'd do differently
+Nothing at this scale yet. Flag for Phase 8: the RAGAS test set should
+deliberately include questions against both section-aware and fallback
+filings, so the faithfulness/context-precision numbers can be compared
+across the two chunking methods — that comparison is the real evidence
+for whether the fallback's honesty-over-guessing tradeoff cost
+meaningful retrieval quality, versus just being a reasonable
+engineering compromise that didn't matter in practice. Currently a
+hypothesis, not a measured fact.
+
+---

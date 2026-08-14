@@ -1,26 +1,55 @@
-# Ticker -> annual report PDF source(s), filled in during Phase 2 (filings
-# ingestion). Left as a skeleton in Phase 0 since sourcing real, stable PDF
-# URLs from each company's investor-relations page is real research work,
-# not scaffolding — see LOG.md Phase 0 entry.
+# Company universe for this project (US large-caps, per the Phase 2 pivot
+# in LOG.md — was Indian companies + manual PDF sourcing, switched to
+# SEC EDGAR for reliable, scriptable filing retrieval).
 #
-# Expected shape once filled in:
-# RELIANCE.NS:
-#   company_name: "Reliance Industries"
-#   annual_report_url: "https://.../annual-report-2023-24.pdf"
-#   fiscal_year: "FY2023-24"
+# `cik` is left null here deliberately: ingestion/download_filings.py
+# resolves ticker -> CIK at runtime via SEC's own
+# www.sec.gov/files/company_tickers.json, rather than hardcoding CIK
+# numbers by hand and risking a wrong digit. This file is the source of
+# truth for *which* companies are in scope, not their SEC identifiers.
 
-RELIANCE.NS:
-TCS.NS:
-INFY.NS:
-HDFCBANK.NS:
-ICICIBANK.NS:
-SBIN.NS:
-ITC.NS:
-LT.NS:
-BHARTIARTL.NS:
-HINDUNILVR.NS:
-WIPRO.NS:
-TATAMOTORS.NS:
-ASIANPAINT.NS:
-MARUTI.NS:
-AXISBANK.NS:
+AAPL:
+  company_name: "Apple Inc."
+  sector: "Tech/Consumer"
+MSFT:
+  company_name: "Microsoft Corporation"
+  sector: "Tech"
+NVDA:
+  company_name: "NVIDIA Corporation"
+  sector: "Tech/Semiconductors"
+JPM:
+  company_name: "JPMorgan Chase & Co."
+  sector: "Banking"
+BAC:
+  company_name: "Bank of America Corporation"
+  sector: "Banking"
+JNJ:
+  company_name: "Johnson & Johnson"
+  sector: "Healthcare"
+PG:
+  company_name: "Procter & Gamble Company"
+  sector: "Consumer Staples"
+CVX:
+  company_name: "Chevron Corporation"
+  sector: "Energy"
+WMT:
+  company_name: "Walmart Inc."
+  sector: "Retail"
+KO:
+  company_name: "Coca-Cola Company"
+  sector: "Consumer Staples"
+BA:
+  company_name: "Boeing Company"
+  sector: "Industrials/Aerospace"
+VZ:
+  company_name: "Verizon Communications Inc."
+  sector: "Telecom"
+CAT:
+  company_name: "Caterpillar Inc."
+  sector: "Industrials"
+F:
+  company_name: "Ford Motor Company"
+  sector: "Auto"
+PFE:
+  company_name: "Pfizer Inc."
+  sector: "Healthcare/Pharma"

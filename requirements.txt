@@ -9,9 +9,12 @@ mcp
 langchain-mcp-adapters
 
 # RAG
+# (pymupdf was here for the original Indian-PDF ingestion plan; dropped
+# after the Phase 2 pivot to SEC EDGAR's HTML filings - see LOG.md)
 sentence-transformers
 chromadb
-pymupdf
+beautifulsoup4
+lxml
 
 # Market data
 yfinance
