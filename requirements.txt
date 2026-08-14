@@ -1,0 +1,39 @@
+# Core orchestration
+langgraph
+langchain
+langchain-community
+langchain-ollama
+
+# MCP
+mcp
+langchain-mcp-adapters
+
+# RAG
+sentence-transformers
+chromadb
+pymupdf
+
+# Market data
+yfinance
+
+# Serving
+fastapi
+uvicorn[standard]
+pydantic
+streamlit
+
+# Eval
+# ragas (as of 0.4.3, and 0.3.9 too) hard-imports
+# langchain_community.chat_models.vertexai, a module langchain-community
+# removed in its "sunset" refactor - breaks `import ragas` for everyone,
+# not just Vertex AI users. Worked around with a sys.modules stub in
+# eval/_ragas_compat.py (call install_ragas_vertexai_stub() before
+# importing ragas) rather than pinning to an old version. See LOG.md.
+ragas
+datasets
+
+# Utilities
+python-dotenv
+pyyaml
+requests
+pytest

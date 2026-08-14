@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/filings/*
+!data/filings/.gitkeep
+data/index/*
+!data/index/.gitkeep
+results/plots/*
+!results/plots/.gitkeep
+results/mcp_external_client_proof/*
+!results/mcp_external_client_proof/.gitkeep
+*.log
+.pytest_cache/

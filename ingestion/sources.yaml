@@ -1,0 +1,26 @@
+# Ticker -> annual report PDF source(s), filled in during Phase 2 (filings
+# ingestion). Left as a skeleton in Phase 0 since sourcing real, stable PDF
+# URLs from each company's investor-relations page is real research work,
+# not scaffolding — see LOG.md Phase 0 entry.
+#
+# Expected shape once filled in:
+# RELIANCE.NS:
+#   company_name: "Reliance Industries"
+#   annual_report_url: "https://.../annual-report-2023-24.pdf"
+#   fiscal_year: "FY2023-24"
+
+RELIANCE.NS:
+TCS.NS:
+INFY.NS:
+HDFCBANK.NS:
+ICICIBANK.NS:
+SBIN.NS:
+ITC.NS:
+LT.NS:
+BHARTIARTL.NS:
+HINDUNILVR.NS:
+WIPRO.NS:
+TATAMOTORS.NS:
+ASIANPAINT.NS:
+MARUTI.NS:
+AXISBANK.NS:
