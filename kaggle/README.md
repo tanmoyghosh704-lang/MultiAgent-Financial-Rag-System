@@ -84,9 +84,18 @@ Steps, in addition to the general setup above:
 4. Results land in `data/eval/ragas_report.json` - unlike `data/filings/`
    and `data/index/`, `data/eval/` is NOT gitignored (it's small,
    human-readable, and worth keeping as a record of what the numbers
-   were on a given run), so download it from `/kaggle/working/` before
-   the session ends and commit it alongside the `LOG.md`/
-   `results/writeup.md` summary of the same numbers.
+   were on a given run).
+5. Run `python kaggle/collect_results.py` as the last cell - copies the
+   eval report(s) into `/kaggle/working/`, which is what Kaggle
+   automatically packages as the notebook's downloadable Output once you
+   hit **Save Version**. This is the reliable way to get a file out of a
+   Kaggle notebook - a JS-triggered auto-download is unreliable during a
+   headless Save Version run since there's no browser tab guaranteed to
+   be watching; anything under `/kaggle/working/` at the end of the run
+   just appears on the Output tab regardless.
+6. After Save Version finishes, download the report(s) from the
+   notebook's Output tab and commit them into `data/eval/` alongside the
+   `LOG.md`/`results/writeup.md` summary of the same numbers.
 
 ## Known gotcha: ragas import
 
