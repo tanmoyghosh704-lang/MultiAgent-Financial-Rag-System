@@ -1595,3 +1595,120 @@ the underlying principle (this hardware doesn't have concurrency
 headroom, full stop) to the rest of the pipeline.
 
 ---
+
+## 2026-08-16 — Phase 8 follow-up 2: the max_workers=1 fix didn't work — revised diagnosis
+
+### What happened
+User re-ran the full 30-question RAGAS eval on Kaggle with the
+`max_workers=1` fix applied. Real new numbers:
+
+| Metric | This run | Previous run |
+|---|---|---|
+| Faithfulness | 0.6555 | 0.868 |
+| Context Recall | 0.9656 | 0.938 |
+| Context Precision | 0.2178 | 0.269 |
+| Answer Relevancy | **still NaN** | NaN |
+
+**The fix didn't work.** `max_workers=1` makes every judge call fully
+serial - zero possibility of concurrent contention against Ollama - and
+`answer_relevancy` still came back NaN for all 30 questions. This
+directly disproves the concurrency hypothesis from the previous entry
+rather than just failing to confirm it. Recording this plainly: the
+prior diagnosis was wrong, not "partially right" or "needs more tuning"
+- the mechanism I proposed (concurrent load causing malformed retries)
+cannot be the cause if a fully serial run has the identical failure
+rate.
+
+### Second difficulty: collect_results.py crashed too
+Separately, `kaggle/collect_results.py` failed with
+`NameError: name '__file__' is not defined`, traced to a real bug in
+this project's own code (not RAGAS): the script's own docstring
+suggested "paste as a cell, or `!python kaggle/collect_results.py`" as
+two equally valid usage options, but `__file__` is only defined when
+Python runs an actual script file - pasting the code into a notebook
+cell executes it as exec'd kernel content, where `__file__` doesn't
+exist at all. My own documentation offered a broken option. Fixed with
+a `try/except NameError` fallback to `Path.cwd()` (correct here since
+Kaggle notebooks `%cd` into the cloned repo first), and corrected the
+docstring to state the `!python` invocation is the one that's
+guaranteed to work, rather than presenting both as interchangeable.
+The actual `ragas_report.json` had already been written successfully
+inside the repo path before this script ran, so no data was lost - the
+convenience-copy step failed, not the eval itself.
+
+### Revised diagnosis: tested a second hypothesis, also ruled out
+Considered what's actually different between my passing isolated tests
+and the failing full pipeline. Two isolated tests had used a short,
+simple, single-sentence response - the real answers being scored are
+long, multi-paragraph, often formatted as numbered lists. Tested this
+directly: fed the exact same `ResponseRelevancePrompt.generate_multiple`
+call a realistic ~10-point long response (copied from an actual NVDA
+answer in the Kaggle output). **This also succeeded cleanly** - three
+valid, non-empty synthetic questions, same as the short-response test.
+Response length/complexity is now also ruled out.
+
+At this point: the identical isolated mechanism has been tested twice
+locally (short response, long response) and both pass every time; the
+full `evaluate()` pipeline has failed 100% of the time across two
+separate full Kaggle runs (60/60 attempts, two different concurrency
+settings). The failure will not reproduce locally in isolation but is
+completely reliable on Kaggle. The honest conclusion at this point is
+that I've ruled out the two hypotheses I could test without Kaggle
+access, and the next most likely explanation - environment-specific
+behavior (Kaggle runs Python 3.12 per its own traceback; this project's
+`requirements.txt` doesn't pin exact versions, so `pip install` on
+Kaggle could easily resolve different `ragas`/`langchain-ollama`/
+`pydantic` versions than the local venv has) - can't be confirmed
+without checking actual package versions and real exception output on
+Kaggle itself.
+
+### What was built instead of guessing further
+`kaggle/diagnose_answer_relevancy.py`: prints the exact `ragas`/
+`langchain_ollama`/`pydantic` versions in play, then runs the same
+isolated short-response and long-response tests directly on Kaggle,
+with the real exception surfaced (not swallowed into NaN) if either
+fails there. This is the right next step because it turns "guess again
+locally" into "get the one piece of information (does it fail on
+Kaggle in isolation too, and what's the real error) that would actually
+resolve this," rather than continuing to iterate on hypotheses I have
+no way to verify from here.
+
+Also hit, and fixed the same way as Phase 7's MCP server bug: running
+the diagnostic as a bare `python kaggle/diagnose_answer_relevancy.py`
+script fails with `ModuleNotFoundError: No module named 'eval'` (script's
+own directory only on `sys.path`, not the repo root). Fixed by requiring
+`-m kaggle.diagnose_answer_relevancy` invocation instead - identical fix
+to the MCP server subprocess issue, same root cause, recognized quickly
+this time because of the earlier experience.
+
+### A separate, real finding worth keeping regardless of the NaN mystery
+**Faithfulness swung from 0.868 to 0.656 between two nominally-identical
+full runs of the same 30-question eval.** This is a large enough
+difference to matter for how confidently a single number should be
+cited - LLM generation is non-deterministic (the Filings Agent's
+answers differ run to run even for the same question+context), and
+apparently that variance is large enough to move the faithfulness
+average by 0.2 across a 30-question sample. `results/writeup.md` now
+states both numbers and this volatility explicitly rather than treating
+either single run as "the" result - a more statistically honest posture
+would run this multiple times and report a range or mean±spread, which
+wasn't done here given the real cost (each full run is ~20-36 minutes
+even on Kaggle GPU) but is worth naming as a real gap in rigor rather
+than pretending one run settles the question.
+
+### How it was resolved
+Not resolved - `answer_relevancy` remains a known, actively-diagnosed,
+currently-unusable metric. `results/writeup.md` and
+`data/eval/ragas_report.json` updated with the new run's real numbers
+and this status. `collect_results.py` bug fixed and verified. Next
+action is on the user: run `kaggle/diagnose_answer_relevancy.py` on
+Kaggle and bring back its output.
+
+### What I'd do differently
+Would have built the diagnostic script (surfacing real exceptions +
+package versions) *before* proposing the first fix, not after two
+failed fix attempts - `raise_exceptions=False` silently hiding the real
+error was the actual obstacle to fast diagnosis from the start, and
+removing that obstacle should have been the first move, not the third.
+
+---

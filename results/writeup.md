@@ -416,72 +416,98 @@ MCP overhead: **2.88s mean** over 5 trials (Section 6).
 30-question test set built (`data/eval/ragas_test_set.json`), pipeline
 built and validated locally on a 2-question subset first (per the
 project's local/Kaggle compute-split goal — see `kaggle/README.md`),
-then the **full 30-question run executed on Kaggle GPU** and the
-results brought back. Full scores in `data/eval/ragas_report.json`.
+then run **twice** at full scale on Kaggle GPU. Full scores in
+`data/eval/ragas_report.json`.
 
-**Full-scale results (n=30):**
+**Full-scale results, both runs (n=30 each):**
 
-| Metric | Score |
-|---|---|
-| Faithfulness | **0.868** |
-| Context Recall | **0.938** |
-| Context Precision | 0.269 |
-| Answer Relevancy | broken this run — see below, do not cite |
+| Metric | Run 1 | Run 2 (after a config change — see below) |
+|---|---|---|
+| Faithfulness | 0.868 | 0.656 |
+| Context Recall | 0.938 | 0.966 |
+| Context Precision | 0.269 | 0.218 |
+| Answer Relevancy | NaN | NaN (unchanged) |
 
-**Faithfulness (0.868) and context recall (0.938) are strong, real
-numbers** — the Filings Agent's answers are, on average, well-grounded
-in retrieved content, and the retrieved chunks generally do contain
-what's needed to answer. Both are safe to cite.
+**Context recall (0.94–0.97) is consistently strong across both runs** —
+the retrieved chunks reliably contain what's needed to answer. Safe to
+cite as ~0.95.
 
-**Context precision (0.269) is low, and honestly explainable rather
-than alarming:** this metric specifically scores *ranking* quality —
-whether the most relevant retrieved chunk comes first among the top-k —
-not whether relevant content exists in the top-k at all. This system's
-retrieval is a fixed `k=5` similarity search with no re-ranking step; a
-10-K's table-of-contents or audit-opinion boilerplate can rank ahead of
-the actual substantive passage purely on embedding similarity, even
-when a genuinely relevant chunk is also present lower in the same top-5
-(which is exactly what the high context recall confirms is usually
-happening). Low context precision alongside high recall and faithfulness
-is a coherent, specific signal: retrieval finds the right content, just
-not always ranked first — a re-ranking step is the natural next
-improvement this number points to, not a retrieval failure.
+**Faithfulness swung from 0.868 to 0.656 between two nominally identical
+runs — a real, honestly-reported instability, not a typo.** LLM
+generation is non-deterministic: the Filings Agent's answers differ run
+to run even for the same question and retrieved context, and that
+variance is apparently large enough to move a 30-question faithfulness
+average by ~0.2. This matters for how confidently either number should
+be cited — treat faithfulness as "roughly 0.65–0.87 on this system,"
+not a fixed constant, until it's been averaged across enough runs to
+narrow that range. (Not done here: each full run costs ~20–35 minutes
+even on Kaggle GPU, and running it several more times to get a tighter
+estimate was judged not worth the marginal interview value against the
+project's remaining scope — a real, named tradeoff, not an oversight.)
 
-**Answer relevancy came back `NaN` for all 30 questions — a real,
-diagnosed-but-not-yet-fixed issue, not a citable "bad score."** This
-metric works by having the judge LLM generate synthetic reverse-questions
-from each answer (structured JSON output) and comparing their embedding
-similarity to the original question; it explicitly returns `NaN` if the
-LLM's structured output can't be parsed. Isolated local testing of the
-exact same mechanism against the exact same judge model (`qwen2.5:7b`)
-worked correctly — real, well-formed questions came back every time —
-so this is not a fundamental incompatibility. The most likely cause is
-concurrency-induced failure under the full run's real load (multiple
-questions × 4 metrics competing for one Ollama instance), the same root
-cause as the RunConfig bug below. Not yet confirmed with a lower-
-concurrency re-run.
+**Context precision (0.22–0.27) is low both times, and honestly
+explainable rather than alarming:** this metric specifically scores
+*ranking* quality — whether the most relevant retrieved chunk comes
+first among the top-k — not whether relevant content exists in the
+top-k at all. This system's retrieval is a fixed `k=5` similarity
+search with no re-ranking step; a 10-K's table-of-contents or
+audit-opinion boilerplate can rank ahead of the actual substantive
+passage purely on embedding similarity, even when a genuinely relevant
+chunk is also present lower in the same top-5 (which is exactly what
+the consistently-high context recall confirms is usually happening).
+Low precision alongside high recall and faithfulness is a coherent,
+specific signal: retrieval finds the right content, just not always
+ranked first — a re-ranking step is the natural next improvement this
+points to, not a retrieval failure.
 
-**Two real infrastructure bugs found along the way:**
-1. RAGAS's default `RunConfig` (`timeout=180s, max_workers=16`) assumes
-   a high-throughput remote API; against one local Ollama instance, 16
-   concurrent judge calls just queue behind each other and blow the
-   timeout before ever starting — the first local validation attempt
-   failed completely, every score `NaN`. Fixed with
-   `RunConfig(timeout=900, max_workers=2)`.
-2. One question (JPM's risk-factors question) triggered a real
-   generation failure in the Filings Agent itself: the light model's
-   answer degenerated into a multi-thousand-character repetition loop —
-   a known failure mode for small/quantized models. This corrupted that
-   row's faithfulness/context_precision scores (both `NaN`); context
-   recall was unaffected since it only compares retrieved context to
-   the reference answer, not the generated response.
+**Answer relevancy is `NaN` for all 30 questions in *both* runs — an
+actively diagnosed, still-unresolved issue.** This metric has the judge
+LLM generate synthetic reverse-questions from each answer (structured
+JSON output), returning `NaN` if that output can't be parsed. The
+investigation, in order:
+1. **First hypothesis (concurrency):** RAGAS's default `RunConfig`
+   (`timeout=180s, max_workers=16`) assumes a high-throughput remote
+   API; one local Ollama instance can't serve 16 concurrent judge calls,
+   so the first local validation attempt failed completely on a
+   timeout, every score `NaN`. Fixed with `max_workers=2` — this
+   specific timeout bug was real and the fix worked for it.
+2. Applied the same reasoning to the full run's `answer_relevancy`
+   failure and dropped concurrency further, to `max_workers=1` (fully
+   serial, zero possible contention). **This did not fix it** — Run 2
+   still came back 100% `NaN`, which actually disproves the concurrency
+   hypothesis rather than just failing to confirm it.
+3. **Second hypothesis (response length/complexity):** tested the exact
+   same structured-output mechanism in isolation, locally, against a
+   realistic long multi-point response (not the simple one-sentence
+   test used the first time). **This also succeeded cleanly** — valid
+   questions generated every time. Ruled out too.
+4. At this point the mechanism has passed isolated local testing twice
+   (short and long responses) but failed 100% of the time across two
+   full Kaggle runs (60/60 attempts). The failure won't reproduce
+   locally, which points toward something Kaggle-environment-specific
+   (Kaggle runs Python 3.12; this project's `requirements.txt` doesn't
+   pin exact versions, so `pip install` there could resolve different
+   `ragas`/`langchain-ollama`/`pydantic` versions than the local venv).
+   Not confirmed — built `kaggle/diagnose_answer_relevancy.py` to
+   surface the real exception (RAGAS's default swallows it into a
+   silent `NaN`) and print exact package versions, to be run on Kaggle
+   directly rather than guessed at further from here.
 
-Both bugs share the same underlying lesson as the parallel-latency
-finding in Section 7.2: concurrency and generation reliability
-assumptions tuned for large hosted models don't automatically hold for
-a local, quantized model — and the fix each time was to notice the
-actual failure, diagnose the real mechanism, and adjust for the
-hardware actually in use, not to assume the defaults were fine.
+**A separate real bug, unrelated to RAGAS:** the second Kaggle run's
+result-collection step (`kaggle/collect_results.py`) crashed with
+`NameError: __file__ not defined` — the script's own docstring had
+offered "paste into a cell" as a valid usage option, but `__file__`
+isn't defined when code runs as exec'd cell content rather than an
+actual script file. This project's own documentation offered a broken
+option. Fixed with a `Path.cwd()` fallback and corrected instructions.
+No data was lost — the eval's real output had already been written to
+its normal path before the collection step failed.
+
+All of this — a disproven hypothesis, a still-open mystery, a
+significant run-to-run variance, and a bug in this project's own
+tooling — is reported plainly rather than smoothed over, consistent
+with this project's logging discipline throughout. See `LOG.md`'s two
+"Phase 8 follow-up" entries for the full blow-by-blow.
 
 ### 7.4 Manual synthesis quality review
 
@@ -524,27 +550,34 @@ visibly surviving intact all the way through generation and synthesis.
 
 ## 9. Known limitations (stated honestly, not glossed over)
 
-- **RAGAS answer relevancy**: broken for the full 30-question run (all
-  `NaN`) — diagnosed but not yet fixed/re-verified (Section 7.3).
-  Faithfulness and context recall are real, full-scale numbers; answer
-  relevancy is not currently citable.
+- **RAGAS answer relevancy**: `NaN` across two full 30-question runs,
+  under two different concurrency settings. Two hypotheses tested and
+  ruled out (concurrency, response length/complexity); root cause still
+  open, likely Kaggle-environment-specific (Section 7.3). Not citable.
+- **RAGAS faithfulness has real run-to-run variance**: 0.868 vs. 0.656
+  across two full runs of the same 30-question set — cite as a range
+  (~0.65–0.87), not a single fixed number, until averaged across more
+  runs than was done here (Section 7.3).
 - **MCP external-client proof**: not yet completed (needs manual Claude
   Desktop interaction outside this session).
 - **Streamlit demo**: startup-verified (both servers run, no errors),
   not click-tested end-to-end in a real browser (no browser automation
   available in this session).
-- **Fallback chunking (8/15 companies) actually scored *higher* mean
-  faithfulness than section-aware (7/15) in the full run** — 0.935 vs.
-  0.786 (n=16 vs. n=13, excluding one corrupted row). This is the
-  opposite of what the section-aware design was expected to produce,
-  and worth being honest about rather than quietly dropped: the
-  section-aware group's average was dragged down by one clear anomaly
-  (Boeing's risk-factors question scored faithfulness 0.0 despite the
-  answer containing at least some claims that look traceable to the
-  retrieved context on manual read — flagged as worth re-checking, not
-  yet resolved), and the sample per group (13-16 questions) is small
-  enough that this comparison shouldn't be treated as a settled
-  conclusion about chunking-method quality either way.
+- **Fallback chunking (8/15 companies) scored *higher* mean faithfulness
+  than section-aware (7/15) in Run 1** — 0.935 vs. 0.786 (n=16 vs. n=13,
+  excluding one corrupted row). Opposite of what the section-aware
+  design predicted, and worth reporting rather than dropping quietly —
+  but given the faithfulness variance discovered between Run 1 and Run
+  2 (0.868 → 0.656 overall), this single-run group comparison is even
+  less safe to treat as settled than it looked before that second run:
+  the per-group numbers weren't recomputed for Run 2 (only summary
+  scores were captured that time), so whether fallback still beats
+  section-aware on faithfulness in a second sample is genuinely unknown,
+  not just "small sample, be cautious." Also unresolved: the
+  section-aware group's Run 1 average was dragged down by one clear
+  anomaly (Boeing's risk-factors question scored faithfulness 0.0
+  despite containing claims that look traceable to retrieved context on
+  manual read).
 - **Parallel-vs-sequential result**: real and repeated on this hardware,
   but not yet confirmed to flip on hardware with more headroom (the
   Kaggle re-run that would confirm/deny the CPU-contention hypothesis
@@ -561,8 +594,9 @@ visibly surviving intact all the way through generation and synthesis.
 orchestrating market-data retrieval (served via a custom MCP server),
 section-aware SEC-filing RAG with a documented confidence-based
 fallback, and cross-source synthesis with conditional routing and
-parallel execution; achieved 0.87 faithfulness and 0.94 context recall
-on a 30-question RAGAS evaluation harness, and built a manual review
-process that caught and fixed a real data-accuracy bug; measured (not
-assumed) the sequential-vs-parallel and MCP-vs-direct-call latency
-tradeoffs on constrained local hardware."*
+parallel execution; achieved ~0.95 context recall and 0.66-0.87
+faithfulness (measured across repeated runs) on a 30-question RAGAS
+evaluation harness, and built a manual review process that caught and
+fixed a real data-accuracy bug; measured (not assumed) the
+sequential-vs-parallel and MCP-vs-direct-call latency tradeoffs on
+constrained local hardware."*

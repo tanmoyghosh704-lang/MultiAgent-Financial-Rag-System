@@ -1,53 +1,67 @@
 {
   "_meta": {
-    "description": "Full 30-question RAGAS evaluation, run on Kaggle GPU per kaggle/README.md, judge model qwen2.5:7b-instruct-q4_0, embeddings all-MiniLM-L6-v2. Real production run (not the earlier n=2 local validation). Full per-question response/context text is not stored here (some rows are very large, one pathologically so - see anomalies below); scores are the complete real record. Regenerate via `python -m eval.ragas_eval` on Kaggle for full row-level text if needed.",
+    "description": "Full 30-question RAGAS evaluation, run twice on Kaggle GPU per kaggle/README.md, judge model qwen2.5:7b-instruct-q4_0, embeddings all-MiniLM-L6-v2. Real production runs (not the earlier n=2 local validation). Run 2 used max_workers=1 (fully serial) to test whether concurrency was causing the answer_relevancy NaN failure seen in Run 1 - it did not fix it, disproving that hypothesis (see LOG.md 'Phase 8 follow-up 2'). Full per-question response/context text is not stored here (some rows are very large, one pathologically so in Run 1 - see known_issues); scores are the complete real record for Run 1. Run 2's per-question detail was not captured (only console summary), only its mean_scores are recorded.",
     "run_environment": "Kaggle",
     "known_issues": [
-      "answer_relevancy is NaN for all 30 questions. Diagnosed (see LOG.md Phase 8 Kaggle entry): the underlying mechanism (RAGAS's synthetic reverse-question generation via structured JSON output against the judge LLM) works correctly in isolated local testing against the same qwen2.5:7b model - not a fundamental incompatibility. Most likely cause: concurrent-load-induced timeouts/malformed retries against a single Ollama instance during the full run, the same class of issue already found and partially mitigated via RunConfig tuning earlier in Phase 8. Not re-verified with a lower-concurrency run as of this report.",
-      "JPM-1's generated answer degenerated into a multi-thousand-character repetition loop (a known small/quantized-model failure mode - the model got stuck repeating one sentence). This corrupted faithfulness/context_precision scoring for that single row (both NaN); context_recall was unaffected since it doesn't depend on the generated response, only retrieved context vs. reference.",
-      "Custom '_id'/'_ticker' tracking columns added when building the RAGAS dataset were silently dropped by EvaluationDataset - per-question rows below are matched to test-set IDs by position (processing order matches data/eval/ragas_test_set.json's question order), not by an explicit ID RAGAS preserved."
+      "answer_relevancy is NaN for all 30 questions in BOTH runs, including Run 2's fully-serial (max_workers=1) run - this rules out concurrency as the cause. A second hypothesis (response length/complexity) was also tested and ruled out via isolated local testing. Root cause still open as of this report - likely Kaggle-environment-specific (different Python/package versions than local dev, since requirements.txt doesn't pin exact versions). kaggle/diagnose_answer_relevancy.py exists to surface the real exception + package versions on Kaggle directly.",
+      "Faithfulness varied substantially between runs: 0.8679 (Run 1) vs 0.6555 (Run 2), a ~0.21 swing on the same 30-question set. LLM generation is non-deterministic, so some run-to-run variance is expected, but this magnitude means a single run's faithfulness score should not be cited as a fixed property of the system - see LOG.md and results/writeup.md Section 7.3.",
+      "Run 1 only: JPM-1's generated answer degenerated into a multi-thousand-character repetition loop (a known small/quantized-model failure mode). Corrupted faithfulness/context_precision for that row (both NaN); context_recall was unaffected since it doesn't depend on the generated response.",
+      "Custom '_id'/'_ticker' tracking columns added when building the RAGAS dataset were silently dropped by EvaluationDataset - Run 1's per-question rows below are matched to test-set IDs by position (processing order matches data/eval/ragas_test_set.json's question order), not by an explicit ID RAGAS preserved."
     ]
   },
-  "num_questions_evaluated": 30,
-  "num_questions_skipped": 0,
-  "skipped": [],
-  "mean_scores": {
-    "faithfulness": 0.8679,
-    "answer_relevancy": null,
-    "context_precision": 0.269,
-    "context_recall": 0.9378
+  "run_1": {
+    "run_config": "RunConfig(timeout=900, max_workers=2)",
+    "num_questions_evaluated": 30,
+    "num_questions_skipped": 0,
+    "mean_scores": {
+      "faithfulness": 0.8679,
+      "answer_relevancy": null,
+      "context_precision": 0.269,
+      "context_recall": 0.9378
+    },
+    "per_question": [
+      {"id": "AAPL-1", "faithfulness": 0.8333, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "AAPL-2", "faithfulness": 0.8, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
+      {"id": "MSFT-1", "faithfulness": 0.6667, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
+      {"id": "MSFT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "NVDA-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.8667, "context_recall": 1.0},
+      {"id": "NVDA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0},
+      {"id": "JPM-1", "faithfulness": null, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0, "note": "degenerate repetition-loop response - see known_issues"},
+      {"id": "JPM-2", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
+      {"id": "BAC-1", "faithfulness": 0.8889, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "BAC-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "JNJ-1", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "JNJ-2", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "PG-1", "faithfulness": 0.9375, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
+      {"id": "PG-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "CVX-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.8},
+      {"id": "CVX-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "WMT-1", "faithfulness": 0.7143, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "WMT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
+      {"id": "KO-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
+      {"id": "KO-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "BA-1", "faithfulness": 0.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.6667, "note": "surprising - some claims in the response looked traceable to retrieved context on manual read; flagged as worth re-checking, see LOG.md"},
+      {"id": "BA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "VZ-1", "faithfulness": 0.9, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
+      {"id": "VZ-2", "faithfulness": 0.75, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "CAT-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "CAT-2", "faithfulness": 0.5, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
+      {"id": "F-1", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
+      {"id": "F-2", "faithfulness": 0.9091, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
+      {"id": "PFE-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.6667},
+      {"id": "PFE-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0}
+    ]
   },
-  "mean_scores_note": "answer_relevancy was NaN in the raw output (not JSON-serializable, reported as null) - see known_issues. Do not cite this metric until re-verified with a fix.",
-  "per_question": [
-    {"id": "AAPL-1", "faithfulness": 0.8333, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "AAPL-2", "faithfulness": 0.8, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-    {"id": "MSFT-1", "faithfulness": 0.6667, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
-    {"id": "MSFT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "NVDA-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.8667, "context_recall": 1.0},
-    {"id": "NVDA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0},
-    {"id": "JPM-1", "faithfulness": null, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0, "note": "degenerate repetition-loop response - see known_issues"},
-    {"id": "JPM-2", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-    {"id": "BAC-1", "faithfulness": 0.8889, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "BAC-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "JNJ-1", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "JNJ-2", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "PG-1", "faithfulness": 0.9375, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
-    {"id": "PG-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "CVX-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.8},
-    {"id": "CVX-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "WMT-1", "faithfulness": 0.7143, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "WMT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
-    {"id": "KO-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
-    {"id": "KO-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "BA-1", "faithfulness": 0.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.6667, "note": "surprising - some claims in the response looked traceable to retrieved context on manual read; flagged as worth re-checking, see LOG.md"},
-    {"id": "BA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "VZ-1", "faithfulness": 0.9, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-    {"id": "VZ-2", "faithfulness": 0.75, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "CAT-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "CAT-2", "faithfulness": 0.5, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
-    {"id": "F-1", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-    {"id": "F-2", "faithfulness": 0.9091, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
-    {"id": "PFE-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.6667},
-    {"id": "PFE-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0}
-  ]
+  "run_2": {
+    "run_config": "RunConfig(timeout=900, max_workers=1)",
+    "num_questions_evaluated": 30,
+    "num_questions_skipped": 0,
+    "mean_scores": {
+      "faithfulness": 0.6555,
+      "answer_relevancy": null,
+      "context_precision": 0.2178,
+      "context_recall": 0.9656
+    },
+    "per_question": "not captured this run - only console summary was recorded"
+  }
 }
