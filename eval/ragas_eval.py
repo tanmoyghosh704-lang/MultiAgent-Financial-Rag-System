@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +62,44 @@ REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_
 
 JUDGE_MODEL = "qwen2.5:7b-instruct-q4_0"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+
+def wait_for_ollama(max_wait_seconds: int = 180, poll_interval_seconds: int = 3) -> None:
+    """Polls Ollama's health endpoint until it responds, instead of assuming
+    it's already up when this script starts.
+
+    Found necessary on Kaggle specifically: `ollama serve` gets started as a
+    backgrounded process in an earlier notebook cell (kaggle/setup_ollama_kaggle.sh),
+    and if this script's cell runs before that process has actually finished
+    coming up, the first `ollama.chat()` call inside the Filings Agent fails
+    with a bare `ConnectionError` deep in the ollama client's `_request_raw`
+    - no indication anywhere in that traceback of *why*, which is genuinely
+    hard to diagnose from the error alone. This makes "Ollama isn't ready
+    yet" an explicit, visible wait with progress output instead of an
+    opaque crash on the very first attempt.
+    """
+    import requests
+
+    deadline = time.time() + max_wait_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5).raise_for_status()
+            print(f"Ollama is up at {OLLAMA_HOST}")
+            return
+        except Exception as e:
+            last_error = e
+            print(f"Waiting for Ollama at {OLLAMA_HOST}... ({type(e).__name__}: {e})")
+            time.sleep(poll_interval_seconds)
+
+    raise RuntimeError(
+        f"Ollama never became reachable at {OLLAMA_HOST} after {max_wait_seconds}s. "
+        f"Last error: {last_error}. On Kaggle: run "
+        f"`!nohup ollama serve > /kaggle/working/ollama.log 2>&1 &` in its own cell "
+        f"BEFORE this script's cell, then check /kaggle/working/ollama.log for why it "
+        f"isn't starting (common causes: OOM loading both models, port already in use)."
+    )
 
 
 def build_evaluation_dataset(questions: list[dict[str, Any]]) -> tuple[EvaluationDataset, list[dict[str, Any]]]:
@@ -128,6 +168,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None, help="Only run the first N questions (for local validation)")
     args = parser.parse_args()
+
+    wait_for_ollama()
 
     summary = run_ragas_eval(limit=args.limit)
 
