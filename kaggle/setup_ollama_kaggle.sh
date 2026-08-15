@@ -6,6 +6,13 @@
 
 set -e
 
+# Ollama's installer needs zstd to extract its release archive - Kaggle's
+# base notebook image doesn't include it by default, and the installer
+# fails with "ERROR: This version requires zstd for extraction" without
+# this (found running this script for real on Kaggle). Kaggle notebook
+# kernels run as root, so no sudo needed.
+apt-get update -qq && apt-get install -y -qq zstd
+
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Start the server in the background and wait until it actually responds,
