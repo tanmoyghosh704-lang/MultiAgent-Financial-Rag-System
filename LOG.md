@@ -1696,12 +1696,12 @@ wasn't done here given the real cost (each full run is ~20-36 minutes
 even on Kaggle GPU) but is worth naming as a real gap in rigor rather
 than pretending one run settles the question.
 
-### How it was resolved
-Not resolved - `answer_relevancy` remains a known, actively-diagnosed,
+### How it was resolved (at the time of the entry above)
+Not yet resolved - `answer_relevancy` remained a known, actively-diagnosed,
 currently-unusable metric. `results/writeup.md` and
 `data/eval/ragas_report.json` updated with the new run's real numbers
 and this status. `collect_results.py` bug fixed and verified. Next
-action is on the user: run `kaggle/diagnose_answer_relevancy.py` on
+action was on the user: run `kaggle/diagnose_answer_relevancy.py` on
 Kaggle and bring back its output.
 
 ### What I'd do differently
@@ -1710,5 +1710,101 @@ package versions) *before* proposing the first fix, not after two
 failed fix attempts - `raise_exceptions=False` silently hiding the real
 error was the actual obstacle to fast diagnosis from the start, and
 removing that obstacle should have been the first move, not the third.
+
+---
+
+## Phase 8 follow-up 3: answer_relevancy NaN - actually root-caused
+
+`kaggle/diagnose_answer_relevancy.py` hit its own bug first: the
+`kaggle/` directory had no `__init__.py`, so `python -m
+kaggle.diagnose_answer_relevancy` resolved the `kaggle` name to the
+*installed pip package* (Kaggle's own API client, also called
+`kaggle`) instead of the repo's local directory - Python's import
+system only falls back to a plain directory as a namespace-package
+fragment when no regular package (one with `__init__.py`) is found
+anywhere on `sys.path`, and the installed pip package has one. This
+produced a confusing `No module named
+kaggle.diagnose_answer_relevancy` even though the file clearly existed
+in the working directory. Fixed by adding an empty `kaggle/__init__.py`.
+
+With that fixed, the script ran on Kaggle and reported package versions
+essentially identical to local (`ragas==0.4.3`, `langchain_ollama==1.1.0`
+both exact matches; `pydantic` 2.12.3 on Kaggle vs 2.13.4 local, a minor
+version bump unlikely to matter) - **ruling out the version-drift
+hypothesis** that had been the leading theory. The isolated
+`generate_multiple` test also still didn't reproduce the NaN on Kaggle
+itself (real, non-empty questions were generated, just with a higher
+proportion flagged `noncommittal` than seen locally) - so even
+Kaggle-side isolated calls don't reproduce it; only the full production
+`evaluate()` pipeline does, 100% of the time.
+
+That pointed at the diagnostic script's own instrumentation for the
+real answer. It calls `ResponseRelevancePrompt().generate_multiple(...,
+n=3)` directly, and reading `ragas/prompt/pydantic_prompt.py`'s
+`generate_multiple` implementation shows *why* this could fail
+silently: for a LangChain-backed LLM, it builds `n` identical prompts
+and calls `langchain_llm.agenerate_prompt(prompts, ...)` in one shot -
+LangChain issues all `n` (3) of those as **concurrent async requests**
+to the same Ollama model instance. This concurrency is entirely
+internal to `AnswerRelevancy`'s per-row scoring and is **not** governed
+by ragas's `RunConfig(max_workers=...)`, which only throttles how many
+dataset *rows* the outer Executor processes at once. So the earlier
+"concurrency ruled out" conclusion (Phase 8 follow-up 2, testing
+`max_workers=1`) was real but incomplete - it tested row-level
+concurrency and correctly found that wasn't it, but never touched this
+separate, always-on, per-metric concurrency.
+
+Reading `ragas/metrics/_answer_relevance.py::_calculate_score` confirms
+the exact failure path: `score = np.nan` fires only when **all** `n`
+generated `question` fields come back as an empty string (a total
+structured-output parse failure across every attempt); otherwise, even
+if every attempt is flagged `noncommittal`, the formula just multiplies
+the similarity score by 0, giving `0.0`, not `NaN`. So the real
+production failure requires the judge LLM's structured JSON output to
+come back unparseable on all 3 concurrent calls, for all 30 questions,
+in both runs.
+
+**The mechanism this points to:** Ollama serving multiple concurrent
+generation requests against a single loaded (quantized, 7B) model
+instance can corrupt/truncate output - shared KV-cache slots or context
+bleed between simultaneous requests is a known class of issue for local
+LLM servers under concurrency. Kaggle's GPU (T4/P100) is powerful
+enough that Ollama's auto-detected `OLLAMA_NUM_PARALLEL` actually runs
+those 3 requests genuinely concurrently. Locally, the 4GB-VRAM card
+(partially spilling to CPU/RAM for a 7B model) most likely can't
+actually run 3 concurrent generations either - Ollama's own
+auto-detection would plausibly cap local parallelism at 1 given the
+memory pressure, which would silently and accidentally serialize every
+local test run. That fully explains the pattern that made this so hard
+to pin down: **every isolated local reproduction attempt (8 across two
+sessions) succeeded**, because the one variable that mattered - true
+request-level concurrency against Ollama - was never actually present
+locally, only on Kaggle's stronger hardware.
+
+### Fix applied
+Added `export OLLAMA_NUM_PARALLEL=1` to `kaggle/setup_ollama_kaggle.sh`
+before `ollama serve` starts, forcing the server to fully serialize all
+requests to a given model regardless of how many concurrent async calls
+ragas/LangChain fire at it. This directly targets the mechanism, is a
+one-line change, and costs only some wall-clock time (fewer- or
+no-longer-parallel requests will simply queue) - acceptable for an eval
+job that already runs unattended on Kaggle GPU.
+
+### How it was resolved
+Root cause identified with high confidence via source-level tracing
+(not just black-box hypothesis testing this time), fix applied and
+pushed. **Not yet confirmed** - needs one more full Kaggle RAGAS run
+with the updated `setup_ollama_kaggle.sh` to verify `answer_relevancy`
+actually comes back non-NaN before this can be marked fully resolved.
+
+### What I'd do differently
+Should have read the actual `ragas` library source for the NaN-producing
+branch *before* the second round of black-box hypothesis testing
+(response length, then re-testing concurrency at the wrong layer) -
+tracing the real code path directly found the answer in minutes, versus
+several rounds of "form a hypothesis, test in isolation, fail to
+reproduce" that never touched the right layer of concurrency because
+the assumption was that `RunConfig(max_workers=...)` was the only
+concurrency knob in play.
 
 ---

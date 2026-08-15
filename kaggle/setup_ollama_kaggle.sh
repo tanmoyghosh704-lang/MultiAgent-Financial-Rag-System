@@ -20,6 +20,21 @@ curl -fsSL https://ollama.com/install.sh | sh
 # during Phase 8 evaluation) to sometimes not be enough time for the
 # server to come up, causing every downstream ollama.chat() call to fail
 # with a bare, hard-to-diagnose ConnectionError.
+#
+# OLLAMA_NUM_PARALLEL=1 forces the server to fully serialize requests to a
+# given model instead of running them concurrently. Root-caused via
+# kaggle/diagnose_answer_relevancy.py (see LOG.md): RAGAS's AnswerRelevancy
+# fires 3 concurrent LLM calls per row internally (langchain's
+# agenerate_prompt on a batch of identical prompts), independent of
+# RunConfig(max_workers=...), which only throttles row-level concurrency.
+# On Kaggle's stronger GPU, Ollama's default auto-detected parallelism
+# actually runs those 3 requests concurrently against one model instance,
+# which was corrupting/truncating the structured JSON output (returning
+# an empty "question" field on all 3 attempts, which is the one code path
+# in ragas that yields answer_relevancy=NaN). Locally, weaker/CPU-spilled
+# hardware effectively serialized those same concurrent calls by accident,
+# which is why this never reproduced there across ~8 isolated local tests.
+export OLLAMA_NUM_PARALLEL=1
 nohup ollama serve > /kaggle/working/ollama.log 2>&1 &
 for i in $(seq 1 30); do
   if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
