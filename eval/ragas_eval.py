@@ -52,10 +52,17 @@ from ragas.run_config import RunConfig  # noqa: E402
 # #16 could wait 15+ calls deep before even starting, blowing the 180s
 # timeout before it ever gets a turn. First real run hit exactly this:
 # all 8 jobs (2 questions x 4 metrics) TimeoutError'd, all scores NaN.
-# max_workers=2 keeps some overlap without starving any job for 25+
-# minutes; timeout=900 gives real headroom for this hardware's actual
-# per-call latency instead of assuming API-speed responses.
-LOCAL_OLLAMA_RUN_CONFIG = RunConfig(timeout=900, max_workers=2)
+# max_workers=2 fixed the outright timeouts, but the full 30-question
+# Kaggle run still came back with answer_relevancy == NaN for all 30
+# questions - a different symptom of the same root cause. Isolated
+# testing confirmed the underlying mechanism (structured JSON output
+# from qwen2.5:7b) works fine in isolation, so this is very likely
+# concurrent-load-induced malformed output rather than a model
+# incompatibility - 2 concurrent jobs, each making several LLM calls
+# across 4 metrics, is still real contention against one Ollama
+# instance. Dropped to max_workers=1 (fully serial) as the safer
+# default; not yet re-verified with a fresh Kaggle run - see LOG.md.
+LOCAL_OLLAMA_RUN_CONFIG = RunConfig(timeout=900, max_workers=1)
 
 TEST_SET_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_test_set.json"
 REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_report.json"

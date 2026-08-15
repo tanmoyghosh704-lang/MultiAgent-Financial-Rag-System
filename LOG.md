@@ -1467,3 +1467,131 @@ numeric value to an LLM and expects correct prose about its scale
 is worth auditing the same way before trusting the output.
 
 ---
+
+## 2026-08-15 — Phase 8 follow-up: full RAGAS run on Kaggle (real numbers, two new bugs)
+
+### What happened
+User ran the full 30-question RAGAS eval on Kaggle (after two round trips
+fixing real Kaggle setup issues - Ollama readiness timing and a missing
+`zstd` dependency, both logged separately) and brought back
+`data/eval/ragas_report.json`, `latency_report.json`, and
+`synthesis_reports.json`. This is the real, full-scale deliverable the
+n=2 local validation was explicitly standing in for.
+
+**Real, full-scale RAGAS results (n=30):**
+
+| Metric | Score |
+|---|---|
+| Faithfulness | **0.868** |
+| Context Recall | **0.938** |
+| Context Precision | 0.269 |
+| Answer Relevancy | NaN (all 30) |
+
+Faithfulness and context recall are strong, real, citable numbers.
+Context precision's low score is explainable, not alarming: it's a
+*ranking* metric (is the single best chunk first among the top-k), and
+this system's retrieval is a fixed `k=5` similarity search with no
+re-ranking step - a low precision score alongside high recall is a
+coherent signal ("the right content is in the top-5, just not always
+ranked first") rather than a retrieval failure. Worth remembering as
+the natural next improvement to point at (add a re-ranking step) if
+this project continues past its current scope.
+
+### Difficulty 1: latency_report.json wasn't actually re-run on Kaggle
+The user's uploaded `latency_report.json` was byte-for-byte identical
+to the existing local file (same exact trial values down to the
+decimal). Caught by comparing before accepting it as new evidence,
+rather than assuming a freshly-downloaded file meant a fresh
+measurement - the file just came along with the rest of the repo state
+rather than being regenerated. The Kaggle-hardware re-run of the
+sequential-vs-parallel latency comparison (which would test the Phase
+5/8 CPU-contention hypothesis) still has not happened. Not fixed here -
+flagged, since it would need the user to explicitly run
+`eval/latency_bench.py` on Kaggle and share that specific output.
+
+### Difficulty 2: answer_relevancy is NaN for all 30 questions
+Not dismissed as "the local model is bad at this" without checking.
+Read `ragas/metrics/_answer_relevance.py` directly: the metric asks the
+judge LLM to generate 3 synthetic "reverse questions" per answer via a
+structured JSON output prompt, and explicitly returns `NaN` if all 3
+come back with an empty `question` field - a defensive fallback in
+RAGAS's own code, not a crash.
+
+Tested this exact mechanism in isolation against the same local
+`qwen2.5:7b` judge model (calling `ResponseRelevancePrompt.generate_multiple`
+directly, bypassing the full `evaluate()` pipeline): **it worked
+correctly** - three real, well-formed, non-empty synthetic questions
+came back. This rules out "fundamental incompatibility between qwen2.5:7b
+and structured JSON output" as the cause, which was the first hypothesis
+worth ruling out before looking elsewhere.
+
+Most likely actual cause, not yet confirmed: concurrency-induced failure
+during the real full run, where multiple questions × 4 metrics were
+competing for one Ollama instance simultaneously - conceptually the
+identical root cause as the `RunConfig` timeout bug found earlier in
+Phase 8 (RAGAS's defaults assume a high-throughput remote API; a single
+local/Kaggle Ollama instance doesn't have that headroom), except this
+time surfacing as malformed/empty output under load rather than an
+outright timeout exception. Not yet fixed - would need a re-run with
+`max_workers=1` (fully serial, trading speed for reliability) to
+actually confirm this diagnosis rather than assume it.
+
+### Difficulty 3: a real generation failure caught mid-review
+Reading the raw per-question data (not just the summary numbers) before
+writing anything into the repo surfaced a serious anomaly: JPM's
+risk-factors question generated a response that degenerated into a
+multi-thousand-character loop, the same sentence repeated hundreds of
+times ("Compliance risk is also inherent in the firm's fiduciary
+activities..." verbatim, over and over). This is a known failure mode
+for small/quantized models (repetition/degeneration, especially without
+strong repetition-penalty sampling settings) - not something this
+project had hit before in lighter testing, but a real risk with a 1.5B
+model generating longer-form answers at scale. Corrupted that row's
+faithfulness/context_precision scores (both NaN); context_recall was
+unaffected since it only compares retrieved context against the
+reference answer, never the generated response. Excluded from the
+per-row record stored in the repo (kept as a documented anomaly, not
+reproduced in full - the actual repeated text added no information
+after the first few repetitions and would have bloated the file for no
+benefit).
+
+### A genuinely surprising, honestly-reported finding
+Comparing faithfulness by chunking method across the real 30-question
+run: **fallback-chunked filings scored *higher* mean faithfulness
+(0.935, n=16) than section-aware ones (0.786, n=13)** - the opposite of
+what the Phase 2 chunking design predicted (section-aware chunks were
+expected to give the model cleaner, more reliably on-topic context).
+Investigated rather than filed away as noise: most of the gap traces to
+one anomaly in the section-aware group - Boeing's risk-factors question
+scored faithfulness 0.0, but reading the actual response, at least two
+of its four claims looked genuinely traceable to the retrieved context
+on manual inspection (legal proceedings and environmental liabilities
+were both directly supported). A response with some clearly-grounded
+claims scoring a flat 0.0 looks more like a judge-scoring artifact than
+an accurate "nothing in this answer is grounded" assessment - flagged
+as worth deeper QA, not yet resolved, and the group-level comparison
+shouldn't be treated as a settled verdict on chunking-method quality
+given both the small per-group sample (13-16 questions) and this one
+unresolved outlier's outsized effect on the average.
+
+### How it was resolved
+Numbers accepted and reported honestly with their caveats
+(`results/writeup.md` Section 7.3 and Section 9 updated); the two
+concurrency-related bugs (RunConfig timeout, answer_relevancy NaN) and
+the BA-1 scoring anomaly are documented as open, diagnosed-but-unfixed
+items rather than silently patched over or hidden. `data/eval/ragas_report.json`
+updated with the real per-question scores (compact form - full
+response/context text not stored in the repo to avoid bloating it with
+the degenerate JPM-1 text specifically, but every real score is
+preserved).
+
+### What I'd do differently
+Would run the full Kaggle eval with `max_workers=1` from the start,
+given the earlier local `RunConfig` bug already demonstrated this exact
+class of concurrency fragility against a single Ollama instance - the
+same lesson had to be relearned a second time (as `answer_relevancy`
+NaN) because the fix for the first symptom (timeout) didn't generalize
+the underlying principle (this hardware doesn't have concurrency
+headroom, full stop) to the rest of the pipeline.
+
+---
