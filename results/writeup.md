@@ -416,34 +416,40 @@ MCP overhead: **2.88s mean** over 5 trials (Section 6).
 30-question test set built (`data/eval/ragas_test_set.json`), pipeline
 built and validated locally on a 2-question subset first (per the
 project's local/Kaggle compute-split goal — see `kaggle/README.md`),
-then run **twice** at full scale on Kaggle GPU. Full scores in
+then run **three times** at full scale: twice on Kaggle GPU (both hit
+the `answer_relevancy` bug below), then once locally on the user's own
+GPU after root-causing and fixing it. Full scores in
 `data/eval/ragas_report.json`.
 
-**Full-scale results, both runs (n=30 each):**
+**Full-scale results, all three runs (n=30 each):**
 
-| Metric | Run 1 | Run 2 (after a config change — see below) |
-|---|---|---|
-| Faithfulness | 0.868 | 0.656 |
-| Context Recall | 0.938 | 0.966 |
-| Context Precision | 0.269 | 0.218 |
-| Answer Relevancy | NaN | NaN (unchanged) |
+| Metric | Run 1 (Kaggle) | Run 2 (Kaggle) | Run 3 (local, fixed) |
+|---|---|---|---|
+| Faithfulness | 0.868 | 0.656 | 0.727 |
+| Context Recall | 0.938 | 0.966 | 0.937 |
+| Context Precision | 0.269 | 0.218 | 0.218 |
+| Answer Relevancy | NaN | NaN | **0.548** |
 
 **Context recall (0.94–0.97) is consistently strong across both runs** —
 the retrieved chunks reliably contain what's needed to answer. Safe to
 cite as ~0.95.
 
-**Faithfulness swung from 0.868 to 0.656 between two nominally identical
-runs — a real, honestly-reported instability, not a typo.** LLM
-generation is non-deterministic: the Filings Agent's answers differ run
-to run even for the same question and retrieved context, and that
-variance is apparently large enough to move a 30-question faithfulness
-average by ~0.2. This matters for how confidently either number should
-be cited — treat faithfulness as "roughly 0.65–0.87 on this system,"
-not a fixed constant, until it's been averaged across enough runs to
-narrow that range. (Not done here: each full run costs ~20–35 minutes
-even on Kaggle GPU, and running it several more times to get a tighter
-estimate was judged not worth the marginal interview value against the
-project's remaining scope — a real, named tradeoff, not an oversight.)
+**Faithfulness ranged 0.656–0.868 across three nominally identical
+runs (mean 0.750) — a real, honestly-reported instability, not a
+typo.** LLM generation is non-deterministic: the Filings Agent's
+answers differ run to run even for the same question and retrieved
+context, and that variance is apparently large enough to move a
+30-question faithfulness average by ~0.2. Run 3's 0.727 lands between
+the first two, which is at least consistent with genuine run-to-run
+noise around a real mean rather than a one-directional drift. This
+matters for how confidently any single number should be cited — treat
+faithfulness as "roughly 0.66–0.87 on this system," not a fixed
+constant, until it's been averaged across enough runs to narrow that
+range further. (Not done here: each full run costs 20–35 minutes on
+Kaggle GPU or ~2.5 hours locally, and running it several more times to
+get a tighter estimate was judged not worth the marginal interview
+value against the project's remaining scope — a real, named tradeoff,
+not an oversight.)
 
 **Context precision (0.22–0.27) is low both times, and honestly
 explainable rather than alarming:** this metric specifically scores
@@ -460,54 +466,81 @@ specific signal: retrieval finds the right content, just not always
 ranked first — a re-ranking step is the natural next improvement this
 points to, not a retrieval failure.
 
-**Answer relevancy is `NaN` for all 30 questions in *both* runs — an
-actively diagnosed, still-unresolved issue.** This metric has the judge
-LLM generate synthetic reverse-questions from each answer (structured
-JSON output), returning `NaN` if that output can't be parsed. The
-investigation, in order:
-1. **First hypothesis (concurrency):** RAGAS's default `RunConfig`
-   (`timeout=180s, max_workers=16`) assumes a high-throughput remote
-   API; one local Ollama instance can't serve 16 concurrent judge calls,
-   so the first local validation attempt failed completely on a
+**Answer relevancy: `NaN` for all 30 questions in both Kaggle runs,
+root-caused and fixed in Run 3.** This metric has the judge LLM
+generate 3 synthetic reverse-questions from each answer, each flagged
+`noncommittal` (evasive/vague) or not; the row scores `0.0` if all 3 are
+flagged noncommittal, or `NaN` if all 3 come back with unparseable
+(empty) structured output. The investigation, in order:
+1. **First hypothesis (concurrency, general):** RAGAS's default
+   `RunConfig` (`timeout=180s, max_workers=16`) assumes a high-throughput
+   remote API; one local Ollama instance can't serve 16 concurrent judge
+   calls, so the first local validation attempt failed completely on a
    timeout, every score `NaN`. Fixed with `max_workers=2` — this
    specific timeout bug was real and the fix worked for it.
 2. Applied the same reasoning to the full run's `answer_relevancy`
-   failure and dropped concurrency further, to `max_workers=1` (fully
-   serial, zero possible contention). **This did not fix it** — Run 2
-   still came back 100% `NaN`, which actually disproves the concurrency
-   hypothesis rather than just failing to confirm it.
+   failure and dropped concurrency further, to `max_workers=1`. **Did
+   not fix it** — Run 2 still came back 100% `NaN`.
 3. **Second hypothesis (response length/complexity):** tested the exact
-   same structured-output mechanism in isolation, locally, against a
-   realistic long multi-point response (not the simple one-sentence
-   test used the first time). **This also succeeded cleanly** — valid
-   questions generated every time. Ruled out too.
-4. At this point the mechanism has passed isolated local testing twice
-   (short and long responses) but failed 100% of the time across two
-   full Kaggle runs (60/60 attempts). The failure won't reproduce
-   locally, which points toward something Kaggle-environment-specific
-   (Kaggle runs Python 3.12; this project's `requirements.txt` doesn't
-   pin exact versions, so `pip install` there could resolve different
-   `ragas`/`langchain-ollama`/`pydantic` versions than the local venv).
-   Not confirmed — built `kaggle/diagnose_answer_relevancy.py` to
-   surface the real exception (RAGAS's default swallows it into a
-   silent `NaN`) and print exact package versions, to be run on Kaggle
-   directly rather than guessed at further from here.
+   structured-output mechanism in isolation against a realistic long
+   multi-point response. Succeeded cleanly. Ruled out.
+4. **Third hypothesis (Ollama server-side concurrent-request
+   corruption):** traced `ragas`'s source and found `AnswerRelevancy`
+   fires its 3 judge calls concurrently, a layer `RunConfig` doesn't
+   control. Set `OLLAMA_NUM_PARALLEL=1` to force full server-side
+   serialization and re-tested directly (both on Kaggle and, later,
+   locally). **Result: zero change** — this disproved the theory
+   outright rather than just failing to confirm it, a useful correction
+   to an earlier, over-confident write-up of this same hypothesis (see
+   `LOG.md` "Phase 8 follow-up 3" vs "follow-up 4").
+5. **Actual root cause, found by testing real production data directly:**
+   isolated the exact real (freshly-generated) response that was scoring
+   `0.0`/`NaN` and ran it through the judge in isolation. All 3 "diverse"
+   samples came back byte-identical, and consistently misclassified a
+   substantive, well-formed, multi-point bulleted risk-factors answer as
+   `noncommittal`. Re-ran the identical test swapping only the judge
+   model from `qwen2.5:7b-instruct-q4_0` to `qwen2.5:14b` (already
+   available locally): **all 3 samples came back `noncommittal: 0` —
+   correct.** Direct, reproducible, before/after proof that the 7B
+   quantized judge specifically struggles at this one classification
+   sub-task (plausibly pattern-matching "lists several distinct things"
+   as "hedging," even though the same model works fine as judge for the
+   other 3 metrics).
+
+**Fix:** `AnswerRelevancy` now gets its own stronger judge
+(`qwen2.5:14b`), assigned per-metric before the metric list is passed to
+RAGAS's `evaluate()` (which only fills in a default judge for metrics
+that don't already have one set — confirmed by reading `ragas`'s own
+source). The other 3 metrics stay on the faster 7B judge, so this adds
+targeted cost only where it was actually needed rather than roughly
+doubling the whole run's time.
+
+**Result, confirmed with a real 30-question run:** `answer_relevancy`
+mean **0.548**, **zero `NaN` across all 30 rows**. 28 of 30 scored a
+real, varied value (0.38–0.96); 2 rows (both the "MD&A trends" question
+specifically) still scored `0.0` even with the 14B judge — disclosed
+honestly as a residual ~7% error rate, not swept under the rug. This
+run took 2h43m on the user's own local GPU (vs. ~20–35 min per run on
+Kaggle) — a deliberate trade of speed for full control over every
+variable, made after two Kaggle round-trips failed to produce a usable
+number.
 
 **A separate real bug, unrelated to RAGAS:** the second Kaggle run's
 result-collection step (`kaggle/collect_results.py`) crashed with
 `NameError: __file__ not defined` — the script's own docstring had
 offered "paste into a cell" as a valid usage option, but `__file__`
 isn't defined when code runs as exec'd cell content rather than an
-actual script file. This project's own documentation offered a broken
-option. Fixed with a `Path.cwd()` fallback and corrected instructions.
-No data was lost — the eval's real output had already been written to
-its normal path before the collection step failed.
+actual script file. Fixed with a `Path.cwd()` fallback and corrected
+instructions. No data was lost.
 
-All of this — a disproven hypothesis, a still-open mystery, a
-significant run-to-run variance, and a bug in this project's own
-tooling — is reported plainly rather than smoothed over, consistent
-with this project's logging discipline throughout. See `LOG.md`'s two
-"Phase 8 follow-up" entries for the full blow-by-blow.
+The full trail here — two disproven hypotheses (one initially
+mis-attributed with real confidence before being falsified by direct
+testing), a significant faithfulness run-to-run variance, a genuinely
+root-caused judge-model limitation, and a targeted fix — is reported
+plainly rather than smoothed over, consistent with this project's
+logging discipline throughout. See `LOG.md`'s four "Phase 8 follow-up"
+entries for the full blow-by-blow, including the source-code excerpts
+that pinned down the actual mechanism.
 
 ### 7.4 Manual synthesis quality review
 

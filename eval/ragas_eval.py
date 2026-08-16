@@ -68,6 +68,19 @@ TEST_SET_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "raga
 REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "eval" / "ragas_report.json"
 
 JUDGE_MODEL = "qwen2.5:7b-instruct-q4_0"
+# AnswerRelevancy specifically needs a stronger judge. Root-caused locally
+# (see LOG.md "Phase 8 follow-up 4"): the metric asks the judge to classify
+# a response as "noncommittal" (evasive/vague) or not, then generates 3
+# samples and zeroes the whole score if all 3 agree it's noncommittal.
+# qwen2.5:7b-instruct-q4_0 was found to reliably (3/3, temperature
+# notwithstanding) misclassify real, substantive, multi-point bulleted
+# answers as noncommittal - likely pattern-matching "lists several things"
+# as "hedging" rather than "directly answers with several sourced facts".
+# Verified directly: the same response scored noncommittal=0 (correct) on
+# all 3 samples from qwen2.5:14b instead. Used only for this one metric
+# (not swapped globally) to avoid ~doubling runtime for the other 3
+# metrics, which don't show this failure mode.
+ANSWER_RELEVANCY_JUDGE_MODEL = "qwen2.5:14b"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
@@ -144,11 +157,21 @@ def run_ragas_eval(limit: int | None = None) -> dict[str, Any]:
     dataset, skipped = build_evaluation_dataset(questions)
 
     judge_llm = LangchainLLMWrapper(ChatOllama(model=JUDGE_MODEL))
+    answer_relevancy_judge_llm = LangchainLLMWrapper(ChatOllama(model=ANSWER_RELEVANCY_JUDGE_MODEL))
     judge_embeddings = LangchainEmbeddingsWrapper(HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL))
 
     result = evaluate(
         dataset,
-        metrics=[Faithfulness(), AnswerRelevancy(), ContextPrecision(), ContextRecall()],
+        # AnswerRelevancy gets its own (stronger) judge LLM pre-set here -
+        # evaluate() only fills in the default `llm=` below for metrics
+        # whose `.llm` is still None, so this override is respected rather
+        # than clobbered. See ANSWER_RELEVANCY_JUDGE_MODEL comment above.
+        metrics=[
+            Faithfulness(),
+            AnswerRelevancy(llm=answer_relevancy_judge_llm, embeddings=judge_embeddings),
+            ContextPrecision(),
+            ContextRecall(),
+        ],
         llm=judge_llm,
         embeddings=judge_embeddings,
         run_config=LOCAL_OLLAMA_RUN_CONFIG,

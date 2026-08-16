@@ -3,10 +3,10 @@
     "description": "Full 30-question RAGAS evaluation, run twice on Kaggle GPU per kaggle/README.md, judge model qwen2.5:7b-instruct-q4_0, embeddings all-MiniLM-L6-v2. Real production runs (not the earlier n=2 local validation). Run 2 used max_workers=1 (fully serial) to test whether concurrency was causing the answer_relevancy NaN failure seen in Run 1 - it did not fix it, disproving that hypothesis (see LOG.md 'Phase 8 follow-up 2'). Full per-question response/context text is not stored here (some rows are very large, one pathologically so in Run 1 - see known_issues); scores are the complete real record for Run 1. Run 2's per-question detail was not captured (only console summary), only its mean_scores are recorded.",
     "run_environment": "Kaggle",
     "known_issues": [
-      "answer_relevancy is NaN for all 30 questions in BOTH runs, including Run 2's fully-serial (max_workers=1) run - this rules out concurrency as the cause. A second hypothesis (response length/complexity) was also tested and ruled out via isolated local testing. Root cause still open as of this report - likely Kaggle-environment-specific (different Python/package versions than local dev, since requirements.txt doesn't pin exact versions). kaggle/diagnose_answer_relevancy.py exists to surface the real exception + package versions on Kaggle directly.",
       "Faithfulness varied substantially between runs: 0.8679 (Run 1) vs 0.6555 (Run 2), a ~0.21 swing on the same 30-question set. LLM generation is non-deterministic, so some run-to-run variance is expected, but this magnitude means a single run's faithfulness score should not be cited as a fixed property of the system - see LOG.md and results/writeup.md Section 7.3.",
       "Run 1 only: JPM-1's generated answer degenerated into a multi-thousand-character repetition loop (a known small/quantized-model failure mode). Corrupted faithfulness/context_precision for that row (both NaN); context_recall was unaffected since it doesn't depend on the generated response.",
-      "Custom '_id'/'_ticker' tracking columns added when building the RAGAS dataset were silently dropped by EvaluationDataset - Run 1's per-question rows below are matched to test-set IDs by position (processing order matches data/eval/ragas_test_set.json's question order), not by an explicit ID RAGAS preserved."
+      "Custom '_id'/'_ticker' tracking columns added when building the RAGAS dataset were silently dropped by EvaluationDataset - Run 1's per-question rows below are matched to test-set IDs by position (processing order matches data/eval/ragas_test_set.json's question order), not by an explicit ID RAGAS preserved.",
+      "RESOLVED in run_3 (local): answer_relevancy NaN was root-caused to qwen2.5:7b-instruct-q4_0 being an unreliable judge specifically for AnswerRelevancy's noncommittal classification sub-task on real multi-point answers - not a concurrency or environment bug as first suspected (that theory was tested directly and disproven with OLLAMA_NUM_PARALLEL=1, which had zero effect). Fixed by giving AnswerRelevancy its own stronger judge (qwen2.5:14b) while leaving the other 3 metrics on the faster 7b judge. See LOG.md Phase 8 follow-up 4."
     ]
   },
   "run_1": {
@@ -20,36 +20,218 @@
       "context_recall": 0.9378
     },
     "per_question": [
-      {"id": "AAPL-1", "faithfulness": 0.8333, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "AAPL-2", "faithfulness": 0.8, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-      {"id": "MSFT-1", "faithfulness": 0.6667, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
-      {"id": "MSFT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "NVDA-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.8667, "context_recall": 1.0},
-      {"id": "NVDA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0},
-      {"id": "JPM-1", "faithfulness": null, "answer_relevancy": null, "context_precision": null, "context_recall": 1.0, "note": "degenerate repetition-loop response - see known_issues"},
-      {"id": "JPM-2", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-      {"id": "BAC-1", "faithfulness": 0.8889, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "BAC-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "JNJ-1", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "JNJ-2", "faithfulness": 0.8571, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "PG-1", "faithfulness": 0.9375, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
-      {"id": "PG-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "CVX-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.8},
-      {"id": "CVX-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "WMT-1", "faithfulness": 0.7143, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "WMT-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
-      {"id": "KO-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.5},
-      {"id": "KO-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "BA-1", "faithfulness": 0.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 0.6667, "note": "surprising - some claims in the response looked traceable to retrieved context on manual read; flagged as worth re-checking, see LOG.md"},
-      {"id": "BA-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "VZ-1", "faithfulness": 0.9, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0},
-      {"id": "VZ-2", "faithfulness": 0.75, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "CAT-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "CAT-2", "faithfulness": 0.5, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 1.0},
-      {"id": "F-1", "faithfulness": 0.7778, "answer_relevancy": null, "context_precision": 0.0, "context_recall": 1.0},
-      {"id": "F-2", "faithfulness": 0.9091, "answer_relevancy": null, "context_precision": 0.3333, "context_recall": 1.0},
-      {"id": "PFE-1", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 1.0, "context_recall": 0.6667},
-      {"id": "PFE-2", "faithfulness": 1.0, "answer_relevancy": null, "context_precision": 0.5, "context_recall": 1.0}
+      {
+        "id": "AAPL-1",
+        "faithfulness": 0.8333,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "AAPL-2",
+        "faithfulness": 0.8,
+        "answer_relevancy": null,
+        "context_precision": 0.5,
+        "context_recall": 1.0
+      },
+      {
+        "id": "MSFT-1",
+        "faithfulness": 0.6667,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 0.5
+      },
+      {
+        "id": "MSFT-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "NVDA-1",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.8667,
+        "context_recall": 1.0
+      },
+      {
+        "id": "NVDA-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": null,
+        "context_recall": 1.0
+      },
+      {
+        "id": "JPM-1",
+        "faithfulness": null,
+        "answer_relevancy": null,
+        "context_precision": null,
+        "context_recall": 1.0,
+        "note": "degenerate repetition-loop response - see known_issues"
+      },
+      {
+        "id": "JPM-2",
+        "faithfulness": 0.7778,
+        "answer_relevancy": null,
+        "context_precision": 0.5,
+        "context_recall": 1.0
+      },
+      {
+        "id": "BAC-1",
+        "faithfulness": 0.8889,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "BAC-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "JNJ-1",
+        "faithfulness": 0.8571,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "JNJ-2",
+        "faithfulness": 0.8571,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "PG-1",
+        "faithfulness": 0.9375,
+        "answer_relevancy": null,
+        "context_precision": 0.3333,
+        "context_recall": 1.0
+      },
+      {
+        "id": "PG-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "CVX-1",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 1.0,
+        "context_recall": 0.8
+      },
+      {
+        "id": "CVX-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "WMT-1",
+        "faithfulness": 0.7143,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "WMT-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "KO-1",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 0.5
+      },
+      {
+        "id": "KO-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "BA-1",
+        "faithfulness": 0.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 0.6667,
+        "note": "surprising - some claims in the response looked traceable to retrieved context on manual read; flagged as worth re-checking, see LOG.md"
+      },
+      {
+        "id": "BA-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "VZ-1",
+        "faithfulness": 0.9,
+        "answer_relevancy": null,
+        "context_precision": 0.5,
+        "context_recall": 1.0
+      },
+      {
+        "id": "VZ-2",
+        "faithfulness": 0.75,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "CAT-1",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "CAT-2",
+        "faithfulness": 0.5,
+        "answer_relevancy": null,
+        "context_precision": 1.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "F-1",
+        "faithfulness": 0.7778,
+        "answer_relevancy": null,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": "F-2",
+        "faithfulness": 0.9091,
+        "answer_relevancy": null,
+        "context_precision": 0.3333,
+        "context_recall": 1.0
+      },
+      {
+        "id": "PFE-1",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 1.0,
+        "context_recall": 0.6667
+      },
+      {
+        "id": "PFE-2",
+        "faithfulness": 1.0,
+        "answer_relevancy": null,
+        "context_precision": 0.5,
+        "context_recall": 1.0
+      }
     ]
   },
   "run_2": {
@@ -63,5 +245,265 @@
       "context_recall": 0.9656
     },
     "per_question": "not captured this run - only console summary was recorded"
+  },
+  "run_3": {
+    "run_config": "RunConfig(timeout=900, max_workers=1); AnswerRelevancy uses a separate judge (qwen2.5:14b) from the other 3 metrics (qwen2.5:7b-instruct-q4_0)",
+    "run_environment": "Local (own GPU), not Kaggle",
+    "num_questions_evaluated": 30,
+    "num_questions_skipped": 0,
+    "mean_scores": {
+      "faithfulness": 0.7269,
+      "answer_relevancy": 0.5478,
+      "context_precision": 0.2178,
+      "context_recall": 0.9368
+    },
+    "per_question": [
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.9090909090909091,
+        "answer_relevancy": 0.6162607060949706,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4895053965603465,
+        "context_precision": 0.49999999995,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.5714285714285714,
+        "answer_relevancy": 0.44904924937712315,
+        "context_precision": 0.0,
+        "context_recall": 0.5
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.5752826566512445,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.6,
+        "answer_relevancy": 0.6030626975905687,
+        "context_precision": 0.8666666666377778,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.626199755097311,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.8333333333333334,
+        "answer_relevancy": 0.7456628857029517,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.0,
+        "context_precision": 0.49999999995,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.7573927547824318,
+        "context_precision": 0.0,
+        "context_recall": 0.6666666666666666
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.502976882507796,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.8,
+        "answer_relevancy": 0.6396556157215745,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.6,
+        "answer_relevancy": 0.527067324502867,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.5714285714285714,
+        "answer_relevancy": 0.41479392437864143,
+        "context_precision": 0.3333333333,
+        "context_recall": NaN
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.5033855593191455,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.8888888888888888,
+        "answer_relevancy": 0.7339373014539069,
+        "context_precision": 0.99999999995,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.55691384921943,
+        "context_precision": 0.0,
+        "context_recall": 0.8333333333333334
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.5982998384755845,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.0,
+        "answer_relevancy": 0.3771969286373574,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.6870379747697454,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.0,
+        "answer_relevancy": 0.0,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.7397072904058678,
+        "context_precision": 0.0,
+        "context_recall": 0.6666666666666666
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.8333333333333334,
+        "answer_relevancy": 0.5757739717556305,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.5185110833948746,
+        "context_precision": 0.49999999995,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.4990733949364548,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.552601788392444,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.625,
+        "answer_relevancy": 0.5511198769869288,
+        "context_precision": 0.9999999999,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.625,
+        "answer_relevancy": 0.5743314059714025,
+        "context_precision": 0.0,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.2,
+        "answer_relevancy": 0.5248072531784446,
+        "context_precision": 0.3333333333,
+        "context_recall": 1.0
+      },
+      {
+        "id": null,
+        "user_input": "What are the main risk factors disclosed in the filing?",
+        "faithfulness": 0.5,
+        "answer_relevancy": 0.9640289089173497,
+        "context_precision": 0.99999999995,
+        "context_recall": 0.5
+      },
+      {
+        "id": null,
+        "user_input": "What does management's discussion say about recent financial performance and trends?",
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.5292873190390555,
+        "context_precision": 0.49999999995,
+        "context_recall": 1.0
+      }
+    ],
+    "notes": [
+      "answer_relevancy is finally non-NaN for all 30 questions here - see LOG.md Phase 8 follow-up 4 for the full root-cause story (qwen2.5:7b-instruct-q4_0 was systematically misclassifying real multi-point answers as noncommittal in AnswerRelevancy specifically; swapping just that one metric to qwen2.5:14b as judge fixed it, confirmed directly by isolated before/after testing on the same real response).",
+      "2 of 30 rows (both the MD&A-trends question, not risk-factors) still scored answer_relevancy=0.0 even with the 14b judge - a residual, disclosed error rate rather than a total failure.",
+      "One unrelated OutputParserException hit Faithfulness json parsing for one PG question mid-run (job 51/120) - ragas caught it and continued (raise_exceptions=False), resulting in 1 NaN context_recall value; did not affect answer_relevancy.",
+      "Full local run took 2h43m on the user's own GPU (vs ~20-36 min per run on Kaggle GPU for earlier attempts) - this run intentionally traded speed for local control after two Kaggle runs failed to produce a usable answer_relevancy."
+    ]
   }
 }

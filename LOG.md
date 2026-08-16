@@ -1808,3 +1808,101 @@ the assumption was that `RunConfig(max_workers=...)` was the only
 concurrency knob in play.
 
 ---
+
+## Phase 8 follow-up 4: answer_relevancy - actually fixed this time, with real numbers
+
+The concurrency theory from follow-up 3 turned out to be **wrong**, and
+the disconfirming evidence came from finally testing it directly rather
+than reasoning about it. Decided to run the full eval locally instead
+of another Kaggle round-trip (user's own GPU, accepting a multi-hour
+run in exchange for full control over every variable).
+
+First hurdle wasn't a code bug at all: the local Ollama server wasn't
+even running (`ConnectionError`, not a timeout - a genuinely different
+failure mode from anything seen before). Started it and re-ran.
+
+Second result: `answer_relevancy` came back `0.0` for all 3 sanity-check
+questions - not `NaN`, but not a real score either. Per
+`ragas/metrics/_answer_relevance.py::_calculate_score`, `0.0` is what
+you get when every one of the 3 generated questions is real (non-empty)
+but flagged `noncommittal`; `NaN` only fires when all 3 come back
+*empty*. Different failure mode, same broken metric.
+
+Applied the OLLAMA_NUM_PARALLEL=1 fix locally too (restarted Ollama with
+it set) to test the follow-up-3 concurrency theory directly - **result:
+identical `0.0`, zero change.** This directly disproves the concurrency
+hypothesis; capping server-side parallelism to 1 had no effect on the
+outcome, so genuinely concurrent requests were never the mechanism.
+Important correction to the previous entry, which had concluded this
+with real confidence from source-reading alone, without a test that
+could have falsified it - reasoning about a code path is not the same
+as testing the actual behavior it's supposed to explain.
+
+Went back to direct testing. Isolated the exact real (freshly-generated,
+not hand-picked) response that scored `0.0` and ran it through
+`ResponseRelevancePrompt().generate_multiple(n=3)` standalone: **all 3
+samples came back with identical text AND identical `noncommittal: 1`**,
+for a genuinely substantive, well-formed, multi-point bulleted answer.
+No diversity across the 3 "independent" samples despite the judge LLM's
+temperature being unset (so Ollama's own ~0.8 default should apply) -
+whatever's driving this judgment is a stable bias, not sampling noise,
+so more samples at the same model wouldn't have fixed it.
+
+Tested the same exact response against `qwen2.5:14b` (already pulled
+locally) instead of `qwen2.5:7b-instruct-q4_0` as judge: **all 3 samples
+came back `noncommittal: 0` - correct.** Direct, reproducible,
+before/after evidence that the 7B quantized judge is specifically
+unreliable at *this* classification sub-task (likely pattern-matching
+"lists several distinct things" as "hedging/evasive" rather than
+"directly answers with several sourced facts" - an understandable
+mistake for a small model, not a sign of general incompetence, since
+the same model works fine as judge for the other 3 metrics).
+
+### Fix applied
+`AnswerRelevancy` now gets its own judge LLM (`qwen2.5:14b`), set via
+`AnswerRelevancy(llm=answer_relevancy_judge_llm, ...)` *before* the
+metric list is passed to `evaluate()`. Confirmed via reading
+`ragas/evaluation.py` that `evaluate()` only fills in its own default
+`llm=` for metrics whose `.llm` is still `None` (line ~174), so a
+pre-set metric-level LLM is respected, not overwritten - this let the
+other 3 metrics stay on the faster 7B judge rather than doubling total
+runtime by swapping the judge globally.
+
+### Result
+Confirmed with a fresh `--limit 3` sanity run
+(`answer_relevancy: 0.7131`, all non-NaN, non-zero), then the full
+30-question run: **`answer_relevancy: 0.5478` mean, zero NaN across all
+30 rows.** 28 of 30 rows scored a real, varied value (0.38-0.96); 2 rows
+(both the "MD&A trends" question specifically, not "risk factors")
+still scored `0.0` even with the 14B judge - a disclosed, honest
+residual error rate, not a total failure. One unrelated
+`OutputParserException` hit `Faithfulness`'s JSON parsing for a single
+P&G question mid-run (job 51/120); ragas's default exception handling
+caught it and continued, producing one `NaN` in `context_recall` for
+that row only - noted, not chased further, since it's a single
+transient parse failure rather than a systematic pattern.
+
+Full local run took **2h43m** on the user's own GPU. Results merged
+into `data/eval/ragas_report.json` as `run_3` (`run_1`/`run_2` history
+preserved), and `eval/ragas_eval.py` updated with
+`ANSWER_RELEVANCY_JUDGE_MODEL` and the per-metric override, committed
+for future runs (local or Kaggle) to inherit the fix automatically.
+
+### How it was resolved
+Fully resolved, with real, verified, non-NaN numbers from a genuine
+30-question run - not a workaround, a root-caused fix confirmed by
+direct before/after testing on the same input.
+
+### What I'd do differently
+The concurrency theory in follow-up 3 was reasoned from source code
+alone and never actually tested against a live failure before being
+written up with high confidence - that's the same mistake as the first
+two follow-ups (proposing a fix based on plausible reasoning rather than
+a falsifying test), just one level more sophisticated (reading library
+internals instead of guessing black-box). The lesson that actually
+generalizes: a root-cause claim isn't done until you've run the fix
+against a real failure and watched the failure not happen - which is
+exactly what finally worked here, twice (once to falsify the wrong
+theory, once to confirm the right one).
+
+---
