@@ -1,64 +1,71 @@
 {
-  "sequential_vs_parallel": {
-    "ticker": "F",
-    "trials": 2,
-    "parallel_totals": [
-      134.48,
-      90.09
-    ],
-    "sequential_totals": [
-      100.99,
-      95.15
-    ],
-    "parallel_mean": 112.28,
-    "sequential_mean": 98.07,
-    "parallel_stdev": 31.39,
-    "sequential_stdev": 4.13,
-    "parallel_details": [
-      {
-        "market": 4.48,
-        "filings": 29.01,
-        "synthesis": 105.45
-      },
-      {
-        "market": 4.03,
-        "filings": 14.88,
-        "synthesis": 75.2
-      }
-    ],
-    "sequential_details": [
-      {
-        "market": 4.25,
-        "filings": 15.55,
-        "synthesis": 81.19
-      },
-      {
-        "market": 4.07,
-        "filings": 18.38,
-        "synthesis": 72.69
-      }
-    ],
-    "parallel_vs_sequential_pct": 14.5
+  "_meta": {
+    "description": "Sequential-vs-parallel graph execution and MCP-vs-direct-call overhead, measured in two environments to test whether the local 'parallel is slower' finding was a local-hardware artifact.",
+    "known_issues": [
+      "Only 2 trials per environment for sequential_vs_parallel - a real limitation, and Kaggle's parallel trials show high variance (33.5s then 16.86s), so the precise magnitude isn't tightly pinned down even though the direction (parallel slower) is now confirmed across two very different environments.",
+      "An earlier Kaggle run's latency_report.json was found to be a stale copy of the local file (byte-identical), i.e. never actually regenerated there. This 'kaggle' entry is the real, freshly-generated Kaggle run that superseded it."
+    ]
   },
-  "mcp_overhead": {
-    "ticker": "F",
-    "trials": 5,
-    "mcp_times": [
-      3.83,
-      3.25,
-      3.64,
-      3.37,
-      3.32
-    ],
-    "direct_times": [
-      1.36,
-      0.41,
-      0.38,
-      0.46,
-      0.39
-    ],
-    "mcp_mean": 3.48,
-    "direct_mean": 0.6,
-    "overhead_seconds": 2.88
+  "local": {
+    "run_environment": "Local (4GB VRAM GPU, partial CPU spillover for 7B/1.5B models)",
+    "sequential_vs_parallel": {
+      "ticker": "F",
+      "trials": 2,
+      "parallel_totals": [134.48, 90.09],
+      "sequential_totals": [100.99, 95.15],
+      "parallel_mean": 112.28,
+      "sequential_mean": 98.07,
+      "parallel_stdev": 31.39,
+      "sequential_stdev": 4.13,
+      "parallel_details": [
+        {"market": 4.48, "filings": 29.01, "synthesis": 105.45},
+        {"market": 4.03, "filings": 14.88, "synthesis": 75.2}
+      ],
+      "sequential_details": [
+        {"market": 4.25, "filings": 15.55, "synthesis": 81.19},
+        {"market": 4.07, "filings": 18.38, "synthesis": 72.69}
+      ],
+      "parallel_vs_sequential_pct": 14.5
+    },
+    "mcp_overhead": {
+      "ticker": "F",
+      "trials": 5,
+      "mcp_times": [3.83, 3.25, 3.64, 3.37, 3.32],
+      "direct_times": [1.36, 0.41, 0.38, 0.46, 0.39],
+      "mcp_mean": 3.48,
+      "direct_mean": 0.6,
+      "overhead_seconds": 2.88
+    }
+  },
+  "kaggle": {
+    "run_environment": "Kaggle (real GPU, no CPU spillover)",
+    "sequential_vs_parallel": {
+      "ticker": "F",
+      "trials": 2,
+      "parallel_totals": [33.5, 16.86],
+      "sequential_totals": [22.5, 21.3],
+      "parallel_mean": 25.18,
+      "sequential_mean": 21.9,
+      "parallel_stdev": 11.77,
+      "sequential_stdev": 0.85,
+      "parallel_details": [
+        {"market": 4.09, "filings": 20.56, "synthesis": 12.93},
+        {"market": 3.79, "filings": 3.24, "synthesis": 13.06}
+      ],
+      "sequential_details": [
+        {"market": 3.32, "filings": 4.4, "synthesis": 14.76},
+        {"market": 3.43, "filings": 5.13, "synthesis": 12.74}
+      ],
+      "parallel_vs_sequential_pct": 15.0
+    },
+    "mcp_overhead": {
+      "ticker": "F",
+      "trials": 5,
+      "mcp_times": [3.28, 3.35, 3.29, 3.27, 3.34],
+      "direct_times": [0.35, 0.14, 0.11, 0.2, 0.12],
+      "mcp_mean": 3.31,
+      "direct_mean": 0.18,
+      "overhead_seconds": 3.12
+    }
   }
 }

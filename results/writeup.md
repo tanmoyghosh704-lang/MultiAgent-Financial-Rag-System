@@ -386,30 +386,53 @@ All 4 tested scenarios route correctly (Section 5 table).
 
 ### 7.2 Latency
 
-| | Parallel | Sequential |
-|---|---|---|
-| Phase 5 (2 trials) | 129.95s, 105.40s | 109.17s, 91.04s |
-| Phase 8 (2 fresh trials) | 134.48s, 90.09s | 100.99s, 95.15s |
-| **Mean** | **112.28s** | **98.07s** |
+| | Parallel | Sequential | Environment |
+|---|---|---|---|
+| Phase 5 (2 trials) | 129.95s, 105.40s | 109.17s, 91.04s | Local (4GB GPU, CPU spillover) |
+| Phase 8 (2 trials) | 134.48s, 90.09s | 100.99s, 95.15s | Local (4GB GPU, CPU spillover) |
+| Phase 8 follow-up (2 trials) | 33.5s, 16.86s | 22.5s, 21.3s | **Kaggle (real GPU, no spillover)** |
+| **Mean** | **112.28s** (local) / **25.18s** (Kaggle) | **98.07s** (local) / **21.9s** (Kaggle) | |
 
-**Parallel execution was ~14.5% slower than sequential** — the opposite
-of the expected result, and consistent across 4 independent trials
-across two sessions (Phase 5 measured 17.5% slower). This is a genuinely
-surprising, honestly-reported finding: it would have been easy to just
-assert "parallel is faster" the way most multi-agent write-ups do
-without measuring. Root cause: the 7B/1.5B models partially spill to
-CPU on this 4GB laptop GPU (a constraint known since Phase 0), so
-"parallel" Python threads compete for the same saturated CPU rather
-than getting genuine concurrency — LangGraph's thread-based parallelism
-only pays off when branches are predominantly I/O-bound with idle CPU
-to interleave into, which isn't true here. **This does not invalidate
-the multi-agent architectural argument** (Section 3's points 1 and 2
-hold independent of this measurement) — it turns "why Kaggle" from a
-preemptive plan into a concrete, testable hypothesis: a machine with
-real CPU/GPU headroom should show the parallel structure's actual
-benefit. Worth re-running this exact comparison on Kaggle to check.
+**Parallel execution was slower than sequential in every environment
+tested: ~14.5% slower locally, ~15.0% slower on Kaggle** — the same
+result, within half a point, on two hardware setups that differ by
+roughly 4-5x in raw speed. This is the opposite of the naive
+expectation, and it's now a stronger finding than it was locally alone.
 
-MCP overhead: **2.88s mean** over 5 trials (Section 6).
+**This also corrects the original hypothesis.** The first write-up of
+this result blamed local-hardware CPU spillover (the 7B/1.5B models
+partially running on CPU on a 4GB laptop GPU, so "parallel" threads
+compete for a saturated CPU instead of getting real concurrency) — a
+plausible mechanism that would predict the effect should *disappear* on
+Kaggle's GPU, which has no CPU spillover. It didn't disappear; it
+reproduced almost exactly. That rules out CPU contention as the (sole)
+cause. The more likely explanation, consistent with what Section 7.3's
+RAGAS debugging independently found about this same Ollama setup: a
+single Ollama instance serving one loaded model doesn't give genuine
+throughput gains from concurrent requests — Market and Filings agent
+calls landing on the same Ollama server around the same time contend
+for the same underlying generation resource rather than running for
+free in parallel, on *any* hardware, because the bottleneck is
+Ollama's single-model-instance serving behavior, not local compute
+headroom. LangGraph's thread-based fan-out is doing its job correctly;
+the constraint is one level down, in how the shared LLM backend handles
+concurrent load.
+
+Caveat still worth naming: n=2 trials per environment is thin, and
+Kaggle's parallel trials show high variance (33.5s then 16.86s,
+stdev 11.77 — the second trial was actually *faster* than either
+sequential trial), so a possible cold-start effect on the first
+parallel run can't be ruled out with this sample size. The *direction*
+and *magnitude* of the effect being consistent across two very
+different environments is meaningful signal despite this; a tighter
+estimate would need more trials, which wasn't pursued further given
+the finding already generalized once.
+
+**MCP overhead is also consistent across environments: 2.88s mean
+locally, 3.12s mean on Kaggle** (both over 5 trials, Section 6) — this
+makes sense, since MCP's overhead is largely subprocess/stdio-transport
+protocol cost, not model inference speed, so it wouldn't be expected to
+scale with GPU strength the way the parallel/sequential gap does.
 
 ### 7.3 RAGAS (Filings RAG quality)
 
@@ -611,10 +634,14 @@ visibly surviving intact all the way through generation and synthesis.
   anomaly (Boeing's risk-factors question scored faithfulness 0.0
   despite containing claims that look traceable to retrieved context on
   manual read).
-- **Parallel-vs-sequential result**: real and repeated on this hardware,
-  but not yet confirmed to flip on hardware with more headroom (the
-  Kaggle re-run that would confirm/deny the CPU-contention hypothesis
-  hasn't happened).
+- **Parallel-vs-sequential result**: confirmed on Kaggle GPU (Section
+  7.2) — parallel was still ~15% slower there too, which disproves the
+  original CPU-contention hypothesis rather than confirming it. The
+  finding itself (parallel is slower) held up under the exact test that
+  could have overturned it; the *explanation* changed. Residual
+  limitation: only 2 trials per environment, and Kaggle's showed high
+  variance, so the precise magnitude isn't tightly pinned down even
+  though the direction is now cross-environment-confirmed.
 - **Numeric narration risk**: the market-cap bug (Section 7.4) is fixed
   for that one field; any other place a raw large number gets handed to
   an LLM for narration is an unaudited instance of the same risk class.

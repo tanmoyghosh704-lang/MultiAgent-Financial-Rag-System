@@ -1906,3 +1906,67 @@ exactly what finally worked here, twice (once to falsify the wrong
 theory, once to confirm the right one).
 
 ---
+
+## Phase 8 follow-up 5: latency_bench confirmed on Kaggle - finding holds, hypothesis doesn't
+
+User ran `eval/latency_bench.py` on Kaggle for real this time (the
+first attempt, earlier in Phase 8, produced a `latency_report.json`
+that turned out to be a stale copy of the local file - never actually
+regenerated there). This one is genuinely new: absolute times are
+~4-5x faster than local (parallel mean 25.18s vs local's 112.28s,
+sequential 21.9s vs local's 98.07s), consistent with Kaggle's real GPU
+vs. local's 4GB card with CPU spillover.
+
+**The headline finding survived the test that could have overturned
+it: parallel was still slower than sequential on Kaggle - 15.0%,
+against local's 14.5%.** Two environments differing by ~4-5x in raw
+speed produced the same percentage effect within half a point.
+
+**But the original explanation for it didn't survive.** The write-up
+had attributed this to local-hardware CPU contention (7B/1.5B models
+partially spilling to CPU on a 4GB GPU, so "parallel" threads fight
+over a saturated CPU instead of getting real concurrency) - a specific,
+falsifiable mechanism that predicts the effect should shrink or vanish
+on hardware with real headroom and no spillover. It didn't shrink; it
+reproduced almost exactly. That's a clean disproof of the CPU-spillover
+hypothesis, structurally the same shape of mistake as the
+`answer_relevancy` concurrency theory in follow-up 3/4: a plausible
+mechanism proposed and written up before actually testing whether the
+predicted counterfactual holds.
+
+Revised explanation, consistent with what the RAGAS debugging
+independently found about this same Ollama setup (follow-up 4): a
+single Ollama instance serving one loaded model doesn't give real
+throughput gains from concurrent requests. When the Market and Filings
+agents both fire around the same time in the "parallel" graph branch,
+they contend for the same underlying generation resource on the Ollama
+server rather than running genuinely concurrently - a constraint of the
+LLM-serving layer, not of local compute headroom. LangGraph's
+thread-based fan-out is working as designed; the bottleneck is one
+level below it.
+
+MCP overhead also held up cross-environment: 2.88s locally, 3.12s on
+Kaggle - close enough to support treating it as protocol/subprocess
+cost (roughly hardware-independent) rather than something that scales
+with model inference speed, which makes sense since spinning up and
+handshaking a stdio subprocess doesn't touch the GPU at all.
+
+### How it was resolved
+Fully resolved. `data/eval/latency_report.json` restructured to hold
+both `local` and `kaggle` runs (analogous to the RAGAS report's
+`run_1`/`run_2`/`run_3` structure). `results/writeup.md` Section 7.2
+and the limitations table (Section 9) updated to state the confirmed,
+cross-environment finding and the corrected explanation. This closes
+the last open item from `results/writeup.md`'s limitations list and
+the memory-tracked follow-up thread from Phase 8.
+
+### What I'd do differently
+Nothing new here beyond what follow-up 4 already named - this is the
+same lesson landing a second time on a different metric: state a causal
+hypothesis as a hypothesis, not a conclusion, until the experiment that
+could disprove it has actually been run. Two out of two `answer_relevancy`-
+and latency-shaped findings in this project turned out to have the
+*symptom* right and the *mechanism* wrong on first write-up - worth
+remembering as a general pattern, not just fixing case by case.
+
+---
