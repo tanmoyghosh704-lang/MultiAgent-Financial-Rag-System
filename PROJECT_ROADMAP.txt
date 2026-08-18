@@ -1,0 +1,384 @@
+================================================================================
+PROJECT ROADMAP & RESOURCE BREAKDOWN: MULTI-AGENT FINANCIAL RESEARCH
+ASSISTANT (LANGGRAPH + RAG + MCP)
+================================================================================
+
+PROJECT OVERVIEW:
+A 3-agent LangGraph system (Market Agent, Filings Agent, Synthesis Agent)
+that answers financial research questions about US public companies by
+combining live market data (via a custom MCP server) with citation-grounded
+retrieval over real SEC 10-K filings, then synthesizing both sources with
+conditional, failure-aware routing. Fully local-first: Ollama for
+generation, ChromaDB + sentence-transformers for retrieval, no paid API
+required anywhere. Heavy/batch computation (full RAGAS evaluation, latency
+benchmarking) is deliberately offloaded to Kaggle's free GPU notebooks so
+the same code runs unmodified locally (dev/smoke tests) and on Kaggle
+(full-scale runs).
+
+================================================================================
+PHASE 0: ENVIRONMENT, COMPANY UNIVERSE & ARCHITECTURE DECISIONS
+================================================================================
+
+1. ACCOUNTS & ACCESS TO SOURCE:
+   - No paid API keys required anywhere in this project (deliberate
+     constraint - see Phase 3/8 for how the RAGAS judge LLM is also Ollama,
+     not OpenAI/Anthropic).
+   - Kaggle account (for free GPU notebooks - T4x2 or P100) to run
+     compute-heavy jobs (Phase 8) without tying up local hardware.
+   - SEC EDGAR requires no account or key, but DOES require a descriptive
+     `User-Agent` header with real contact info on every request - an
+     anonymous/generic User-Agent gets silently rate-limited or blocked.
+   - Hugging Face account not required (embedding model downloads
+     anonymously), but setting `HF_TOKEN` avoids rate-limit warnings.
+
+2. SOFTWARE & DEPENDENCIES TO INSTALL:
+   - Ollama (local LLM runtime): https://ollama.com
+     ollama pull qwen2.5:1.5b-instruct-q4_0   # Filings Agent (light, fast)
+     ollama pull qwen2.5:7b-instruct-q4_0     # Synthesis Agent + default RAGAS judge
+     ollama pull qwen2.5:14b                  # stronger judge for one RAGAS metric (Phase 8)
+   - Python environment:
+     python -m venv .venv
+     pip install -r requirements.txt
+   - Core packages (see requirements.txt):
+     langgraph langchain langchain-community langchain-ollama   # orchestration
+     mcp langchain-mcp-adapters                                 # MCP client/server
+     sentence-transformers chromadb beautifulsoup4 lxml          # RAG
+     yfinance                                                    # market data
+     fastapi "uvicorn[standard]" pydantic streamlit               # serving
+     ragas datasets                                              # evaluation
+     python-dotenv pyyaml requests pytest                        # utilities
+
+3. KEY ARCHITECTURE DECISIONS MADE UP FRONT:
+   - Company universe: 15 large-cap US companies filing real 10-Ks with
+     SEC EDGAR (AAPL, MSFT, NVDA, JPM, BAC, JNJ, PG, CVX, WMT, KO, BA, VZ,
+     CAT, F, PFE) - chosen over an initial Indian-companies-via-PDF plan
+     after weighing ingestion complexity vs. interview relevance; SEC
+     EDGAR's free, fully-documented, machine-readable API chain (see
+     Phase 2) made structured ingestion tractable without any manual PDF
+     sourcing.
+   - Vector store: ChromaDB over FAISS - the deciding factor is native
+     per-company metadata `where`-filtering, which FAISS would require
+     hand-rolled id-to-metadata bookkeeping to replicate.
+   - Compute split: local machine for development, smoke tests, and index
+     building (CPU-fine for `sentence-transformers` embeddings); Kaggle
+     GPU notebooks for anything LLM-call-heavy at scale (full RAGAS eval,
+     latency benchmarking, batch generation) - every script reads
+     `OLLAMA_HOST` and model names from environment variables rather than
+     hardcoding them, so the identical script runs unmodified in both
+     places.
+   - A `LOG.md` decision/difficulty log and `results/writeup.md` interview
+     narrative are maintained continuously throughout every phase below -
+     treated as first-class deliverables, not an afterthought.
+
+================================================================================
+PHASE 1: MARKET DATA FUNCTIONS (yfinance)
+================================================================================
+
+1. WHAT TO BUILD (`ingestion/market_data.py`):
+   - `fetch_price_history(ticker, period)` - OHLCV history via yfinance.
+   - `fetch_fundamentals(ticker)` - trailing P/E, market cap, average
+     volume, 52-week range.
+   - `compute_indicators(price_history)` - 50/200-day moving averages,
+     annualized realized volatility, recent % change.
+   - Explicit not-found handling: an invalid ticker returns a structured
+     `{"error": "ticker_not_found", ...}` dict rather than raising - this
+     matters later because the LangGraph orchestrator's conditional
+     routing (Phase 5) branches on exactly this kind of structured error.
+
+2. KEY CONCEPT - fail structured, not loud:
+   Every ingestion function in this project (market data, SEC filings,
+   retrieval) returns an explicit ok/error shape instead of letting
+   exceptions propagate, because the orchestration layer built in Phase 5
+   needs a stable contract to route on.
+
+================================================================================
+PHASE 2: SEC FILINGS INGESTION & SECTION-AWARE CHUNKING
+================================================================================
+
+1. THE TICKER -> CIK -> FILING URL CHAIN (`ingestion/download_filings.py`):
+   SEC EDGAR resolves a stock ticker to a real 10-K document via three
+   free, keyless, JSON/HTML endpoints:
+     Step 1: GET https://www.sec.gov/files/company_tickers.json
+             -> maps ticker string to a numeric CIK (Central Index Key,
+                the SEC's permanent per-company identifier - unlike a
+                ticker, a CIK never changes even if the ticker does).
+     Step 2: GET https://data.sec.gov/submissions/CIK{cik:010d}.json
+             -> the company's full filing history; filter for form
+                type "10-K" (annual report) and take the most recent.
+     Step 3: The primary document URL is then deterministic, built from
+             the CIK and the filing's accession number.
+   Every request MUST send a descriptive `User-Agent` header with real
+   contact info - SEC EDGAR rate-limits or blocks anonymous-looking
+   clients.
+
+2. TEXT EXTRACTION (BeautifulSoup + lxml):
+   10-K filings are HTML/XBRL documents (`<ix:...>` inline XBRL tags), not
+   PDFs - `BeautifulSoup.get_text()` has no CSS engine, so it was found to
+   extract text from hidden `display:none`/`<ix:header>` elements too.
+   Fix: strip those elements before calling `.get_text()`, or the fallback
+   chunker gets polluted with raw XBRL tag soup at the start of every
+   fallback-method filing.
+
+3. SECTION-AWARE CHUNKING WITH AN HONEST FALLBACK (`ingestion/chunker.py`):
+   - `CANONICAL_ITEMS`: the 23 standard SEC 10-K Items (1, 1A, 1B, 2...16)
+     that every 10-K nominally contains, in a fixed order.
+   - `detect_sections()`: a heuristic combining (a) canonical Item order
+     and (b) "longest quiet gap to the next Item-like token" to
+     disambiguate a real section heading from an incidental
+     cross-reference to another Item elsewhere in the document (plain
+     regex matching on "Item 1A" alone produces both false negatives on
+     some filers and dozens of false positives on others - tested and
+     rejected before landing on this heuristic).
+   - `MIN_CONFIDENT_SECTIONS = 18`: if fewer than 18 of the 23 canonical
+     items are recovered with confidence, the whole filing honestly falls
+     back to fixed-size sliding-window chunking (`MAX_CHUNK_CHARS = 1200`,
+     `OVERLAP_CHARS = 150`) rather than shipping a partially-wrong
+     section map. Across the 15-company universe, this recovers
+     confident section-awareness for 7 filers and honestly falls back for
+     the other 8 - a deliberate, disclosed design choice, not a bug.
+   - `_split_on_paragraphs()`: word-boundary-aware splitting, after a real
+     bug where raw character-index slicing (in both the hard-split
+     fallback and the overlap-prefix logic) cut words mid-way.
+
+4. EMBEDDING + CHROMA INDEX (`ingestion/build_index.py`):
+   - Embedding model: `sentence-transformers/all-MiniLM-L6-v2` (same model
+     reused later as RAGAS's judge-embeddings in Phase 8, for consistency).
+   - ChromaDB collection with per-company metadata (`ticker`) attached to
+     every chunk, enabling `where`-filtered retrieval scoped to one
+     company at query time.
+   - Real result across the 15-company universe: 7,971 total chunks.
+
+================================================================================
+PHASE 3: FILINGS AGENT (RAG RETRIEVAL + GENERATION + GROUNDING)
+================================================================================
+
+1. RETRIEVAL (`agents/filings_agent.py::retrieve()`):
+   Top-k similarity search against the company-scoped Chroma collection
+   (`where={"ticker": ...}`).
+
+2. GENERATION:
+   Ollama, model `qwen2.5:1.5b-instruct-q4_0` (a small, fast model - the
+   Filings Agent's job is grounded extraction, not creative synthesis, so
+   a light model is a deliberate cost/quality tradeoff).
+
+3. CITATION + GROUNDING CHECKS - the actual RAG-quality guarantee:
+   - `check_citations_exist()`: structural check - does the generated
+     answer actually reference retrieved chunk content, syntactically.
+   - `check_semantic_grounding()`: embedding-similarity check - does the
+     answer's meaning actually align with the retrieved context, not just
+     share surface tokens.
+   - `answer_query()`: the public entry point wiring retrieval, generation,
+     and both grounding checks together, returning a structured
+     ok/error result (same "fail structured" contract as Phase 1).
+   - A real bug found here: citation-format inconsistency from the light
+     model, partially fixed with a one-shot example in the system prompt -
+     later found not to be universally reliable across all queries, and
+     that judgment was deliberately deferred to the real RAGAS numbers
+     (Phase 8) rather than decided from a handful of spot checks.
+
+================================================================================
+PHASE 4: SYNTHESIS AGENT (CROSS-SOURCE REASONING)
+================================================================================
+
+1. WHAT IT DOES (`agents/synthesis_agent.py`):
+   Takes both the Market Agent's structured data and the Filings Agent's
+   grounded answer and produces one coherent, cross-referenced report -
+   Ollama, model `qwen2.5:7b-instruct-q4_0` (a larger model here, since
+   this step requires actual reasoning across two disjoint sources, not
+   just extraction).
+   - `check_cross_source_reasoning()`: verifies the synthesis actually
+     references both input sources, not just one.
+
+2. A REAL BUG FOUND AND FIXED - numeric narration risk:
+   The LLM was handed raw 12-digit market-cap integers and asked to
+   narrate them in prose - it did unreliable mental arithmetic, producing
+   10x errors and internal self-contradictions (e.g. mismatched "$964.42
+   billion" vs. a wrongly-scaled figure two sentences later). Fixed with
+   `_format_market_cap()`, which pre-formats numbers into human-readable
+   strings (e.g. `"$964.42 billion"`) *before* they ever reach the prompt
+   - found via manual review (Phase 8D), not automated eval, which is
+   itself a lesson: some failure classes need a human actually reading
+   the output.
+
+================================================================================
+PHASE 5: LANGGRAPH ORCHESTRATOR (CONDITIONAL ROUTING + PARALLEL EXECUTION)
+================================================================================
+
+1. GRAPH STRUCTURE (`graph/orchestrator.py`):
+   - Nodes: `market_node`, `filings_node`, `join_node`, `synthesis_node`,
+     `error_node`.
+   - `route_after_agents`: real conditional routing wired via
+     `add_conditional_edges` at the `join_node` - not a cosmetic if/else,
+     an actual graph-level branch evaluated once both agents' results are
+     available, deciding synthesis vs. a structured error path.
+   - `PARALLEL_GRAPH` and `SEQUENTIAL_GRAPH`: built from the *identical*
+     node functions, differing only in whether Market and Filings run as
+     parallel fan-out/fan-in or one after another - built this way
+     specifically so the parallel-vs-sequential comparison in Phase 8
+     would rest on a real measurement, not an assumption.
+   - `run_research(ticker, parallel=True)`: the public entry point.
+
+2. KEY CONCEPT - why 3 agents instead of 1:
+   - Disjoint context budgets: long-document retrieval (Filings) vs. small
+     structured JSON (Market) waste context and degrade tool-selection
+     accuracy if crammed into one agent's window.
+   - Disjoint tool sets and failure modes - independently testable,
+     evaluable, and swappable (demonstrated concretely in Phase 7: the
+     Market Agent's entire data-access mechanism was swapped from direct
+     function calls to an MCP client with a one-line change to the
+     orchestrator, nothing else touched).
+   - Market and Filings work is structurally independent, enabling real
+     parallel execution - which Phase 8's actual measurement then
+     contradicted the naive expectation for (see below).
+
+================================================================================
+PHASE 6: SERVING (FASTAPI + STREAMLIT)
+================================================================================
+
+1. FASTAPI (`serving/`):
+   A thin HTTP layer wrapping `run_research()` - exists so the system is
+   consumable as a real API, not just importable Python.
+
+2. STREAMLIT (`demo/`):
+   A minimal interactive front-end over the same FastAPI endpoint - exists
+   purely as a human-usable demo layer, decoupled from the orchestration
+   logic itself (killing/replacing either layer doesn't touch the graph).
+
+================================================================================
+PHASE 7: MCP INTEGRATION (MARKET AGENT -> MCP CLIENT)
+================================================================================
+
+1. WHY MCP IS SCOPED TO ONLY THE MARKET AGENT:
+   The Filings Agent's RAG pipeline has no external consumer and no real
+   decoupling benefit from MCP - deliberately not MCP-ified, to avoid
+   protocol overhead with no matching payoff.
+
+2. SERVER (`mcp_server/market_data_server.py`):
+   Built with the official MCP Python SDK's `FastMCP` (decorator-based
+   tool definitions) - the actual installed SDK's API was checked via
+   `inspect.signature` before writing any code, rather than relying on
+   remembered syntax, since this ecosystem moves fast. Three tools
+   exposed, each a thin wrapper around an unchanged Phase 1 function:
+   `get_price_history`, `get_fundamentals`, `compute_indicators`.
+   Runs over stdio transport (`mcp.run()`).
+
+3. CLIENT (`agents/market_agent.py`):
+   Talks to the server as a subprocess over stdio - a real process
+   boundary, not an in-process function call.
+
+4. A REAL RECURRING BUG CLASS - module resolution for `-m` invocation:
+   Running the server as a bare script (`python
+   mcp_server/market_data_server.py`) fails with `ModuleNotFoundError`,
+   because only the script's own directory lands on `sys.path`, not the
+   repo root - so a sibling package import (e.g. `ingestion.market_data`)
+   can't resolve. Fixed by invoking as `python -m
+   mcp_server.market_data_server` from the repo root instead. The exact
+   same root cause recurred twice more later (a Kaggle diagnostic script,
+   and a results-collection script) - recognized quickly the second and
+   third time specifically because this first instance had been logged
+   clearly.
+
+================================================================================
+PHASE 8: EVALUATION (ROUTING, LATENCY, RAGAS, MANUAL REVIEW) + KAGGLE OFFLOAD
+================================================================================
+
+1. ROUTING CORRECTNESS (`eval/` routing tests):
+   4 named scenarios (invalid ticker, valid-but-thin filing coverage,
+   full success, and a forced-error path) - all 4 route correctly
+   (`data/eval/routing_report.json`).
+
+2. LATENCY BENCHMARK (`eval/latency_bench.py`):
+   Measures the identical `PARALLEL_GRAPH` vs. `SEQUENTIAL_GRAPH` from
+   Phase 5, plus MCP-call vs. direct-call overhead. Run in two
+   environments to test whether a surprising result was hardware-specific:
+     - Local (4GB VRAM GPU, partial CPU spillover for the 7B/1.5B models).
+     - Kaggle (real GPU, no CPU spillover).
+   Result: parallel execution was slower than sequential in BOTH
+   environments (~14.5% local, ~15.0% Kaggle) despite Kaggle being ~4-5x
+   faster in absolute terms - which disproved the original "local
+   CPU-contention" explanation rather than confirming it. Root cause
+   instead: a single Ollama instance serving one loaded model doesn't
+   give real throughput gains from concurrent requests, so "parallel"
+   agent branches contend for the same underlying generation resource
+   regardless of hardware. MCP overhead was consistent too (~2.9-3.1s
+   across both environments) - expected, since it's protocol/subprocess
+   cost, not inference-speed-dependent.
+
+3. RAGAS EVALUATION (`eval/ragas_eval.py`) - the deepest debugging arc
+   in the whole project:
+   - 30-question test set (`data/eval/ragas_test_set.json`); metrics:
+     `Faithfulness`, `AnswerRelevancy`, `ContextPrecision`, `ContextRecall`.
+   - Judge LLM: Ollama (`qwen2.5:7b-instruct-q4_0` by default) and
+     embeddings (`all-MiniLM-L6-v2`) - deliberately not a paid API, so the
+     entire eval harness stays free and reproducible.
+   - `RunConfig(timeout, max_workers)` tuning: default `max_workers=16`
+     assumes a high-throughput remote API; one local/Kaggle Ollama
+     instance can't serve that many concurrent judge calls, so the first
+     run timed out completely. Fixed with `max_workers=2`, later `1`.
+   - `answer_relevancy` came back `NaN` for all 30 questions across two
+     full Kaggle runs, under two different concurrency settings - real
+     multi-session root-cause investigation:
+       a. Concurrency (row-level `max_workers`) - tested, ruled out.
+       b. Response length/complexity - tested in isolation, ruled out.
+       c. Ollama server-side concurrent-request corruption
+          (`OLLAMA_NUM_PARALLEL=1`) - a plausible mechanism reasoned from
+          reading `ragas`'s own source, but when actually tested directly
+          (both on Kaggle and locally), it changed nothing - a clean
+          disproof, and a useful lesson that reasoning about library
+          internals isn't the same as testing the fix against a live
+          failure.
+       d. Actual root cause, found by testing real production data
+          directly: `qwen2.5:7b-instruct-q4_0` systematically
+          misclassifies substantive, multi-point answers as
+          "noncommittal" specifically within RAGAS's `AnswerRelevancy`
+          scoring logic (`ragas/metrics/_answer_relevance.py`: the score
+          is `0.0` if all 3 judge samples agree "noncommittal", `NaN` if
+          all 3 return unparseable output). Proved directly: the exact
+          same response, judged instead by `qwen2.5:14b`, flips from
+          wrong to correct on all 3 samples.
+   - Fix: `AnswerRelevancy` gets its own stronger judge (`qwen2.5:14b`),
+     assigned per-metric before `evaluate()` is called (confirmed via
+     reading `ragas.evaluation.evaluate()`'s source that it only fills in
+     a default judge for metrics whose `.llm` is still `None`) - the
+     other 3 metrics stay on the faster 7B judge, avoiding a blanket
+     model swap that would roughly double total runtime.
+   - Confirmed with a real 30-question local run: `answer_relevancy` mean
+     0.548, zero `NaN` across all 30 rows (28 real varied scores, 2
+     disclosed `0.0` outliers - a genuine ~7% residual error rate,
+     reported honestly rather than hidden).
+   - Final headline numbers (mean across repeated runs): faithfulness
+     0.66-0.87 (real run-to-run non-determinism, not a typo), context
+     recall ~0.94-0.95, context precision ~0.22 (low because retrieval
+     has no re-ranking step on a fixed k=5 search - a specific, coherent
+     signal alongside high recall, not a retrieval failure), answer
+     relevancy 0.548 (post-fix).
+
+4. MANUAL SYNTHESIS QUALITY REVIEW (Phase 8D):
+   10 full synthesis reports read end-to-end by a human (5 section-aware
+   filings, 5 fallback-chunked filings) - not just scored by the
+   automated RAGAS heuristic. This is what actually caught the
+   market-cap arithmetic bug (Phase 4), which no automated metric flagged.
+
+5. WHY KAGGLE, CONCRETELY:
+   Every LLM-call-heavy job above (the full RAGAS run, the latency
+   benchmark) ties up a local GPU for tens of minutes to hours; running
+   the identical script on Kaggle's free GPU notebooks instead required
+   zero code changes, only environment setup
+   (`kaggle/setup_ollama_kaggle.sh`: installs Ollama, starts the server,
+   pulls the same models used locally for numeric comparability) - the
+   local/Kaggle split from Phase 0 paid off exactly as designed.
+
+================================================================================
+SUMMARY CHECKLIST
+================================================================================
+
+Phase 0: Setup & decisions | Ollama, Kaggle account         | Pull models, pick company universe, Chroma over FAISS
+Phase 1: Market data       | yfinance                        | fetch_price_history / fetch_fundamentals / compute_indicators
+Phase 2: Filings ingestion | SEC EDGAR API, BeautifulSoup    | Ticker->CIK->filing chain, section-aware + fallback chunker, Chroma index (7,971 chunks)
+Phase 3: Filings Agent     | Ollama qwen2.5:1.5b             | Retrieval + generation + citation/semantic grounding checks
+Phase 4: Synthesis Agent   | Ollama qwen2.5:7b               | Cross-source reasoning + market-cap formatting fix
+Phase 5: LangGraph graph   | langgraph                       | Conditional routing at join node, parallel vs sequential graphs
+Phase 6: Serving           | FastAPI, Streamlit              | HTTP API + demo UI, decoupled from orchestration
+Phase 7: MCP integration   | mcp SDK (FastMCP)               | Market Agent as MCP client/server over stdio, one-line swap
+Phase 8: Evaluation        | ragas, Kaggle GPU               | Routing (4/4), latency (parallel slower, confirmed x2 envs), RAGAS (all 4 metrics real, non-NaN), manual review
+================================================================================
